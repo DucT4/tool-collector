@@ -1,0 +1,5 @@
+playwright>=1.44
+pymongo>=4.7
+python-dotenv>=1.0
+pydantic>=2.7
+pytest>=8.2
