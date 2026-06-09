@@ -37,6 +37,23 @@ GPM_API_BASE=http://127.0.0.1:19995
 GPM_PROFILE_ID=YOUR_PROFILE_ID
 ```
 
+If you see `Cannot connect to GPMLogin API at http://127.0.0.1:19995`, the GPMLogin REST API is not listening on that port. Open GPMLogin, enable/start the local API, then either update `GPM_API_BASE` or pass:
+
+```powershell
+python main.py "https://www.tiktok.com/@user/video/123456789" `
+  --gpm-profile-id "YOUR_PROFILE_ID" `
+  --gpm-api-base "http://127.0.0.1:YOUR_GPM_API_PORT" `
+  --debug
+```
+
+If the GPMLogin profile is already open and you know its CDP port, bypass the GPMLogin API and connect directly:
+
+```powershell
+python main.py "https://www.tiktok.com/@user/video/123456789" `
+  --cdp-url "http://127.0.0.1:REMOTE_DEBUGGING_PORT" `
+  --debug
+```
+
 ## Manual Chrome CDP Flow
 
 Open Chrome with CDP if you do not use GPMLogin:

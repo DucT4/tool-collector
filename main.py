@@ -2,7 +2,7 @@ import argparse
 import sys
 import time
 
-from browser.cdp import connect_to_browser, connect_to_gpm_profile
+from browser.cdp import GPMLoginError, connect_to_browser, connect_to_gpm_profile
 from collectors.tiktok_comment_collector import collect_from_video, normalize_source_url
 from config.settings import settings
 from database.mongo import get_collection, save_comments
@@ -30,12 +30,19 @@ def main(argv: list[str] | None = None) -> int:
     page = None
 
     try:
-        if args.gpm_profile_id:
-            (playwright, _browser, context), cdp_url = connect_to_gpm_profile(args.gpm_profile_id, args.gpm_api_base)
-            print(f"[GPM] profile={args.gpm_profile_id} cdp={cdp_url}")
-        else:
-            playwright, _browser, context = connect_to_browser(args.cdp_url)
-            print(f"[CDP] cdp={args.cdp_url}")
+        try:
+            if args.gpm_profile_id:
+                (playwright, _browser, context), cdp_url = connect_to_gpm_profile(args.gpm_profile_id, args.gpm_api_base)
+                print(f"[GPM] profile={args.gpm_profile_id} cdp={cdp_url}")
+            else:
+                playwright, _browser, context = connect_to_browser(args.cdp_url)
+                print(f"[CDP] cdp={args.cdp_url}")
+        except GPMLoginError as exc:
+            print(f"[GPM ERROR] {exc}")
+            print("[HINT] Open GPMLogin, enable/start its local API, then pass the correct API base:")
+            print("[HINT] python main.py <url> --gpm-profile-id <id> --gpm-api-base http://127.0.0.1:<api_port>")
+            print("[HINT] If the profile is already open, use --cdp-url http://127.0.0.1:<remote_debugging_port> instead.")
+            return 1
 
         page = context.new_page()
         collection = get_collection()
