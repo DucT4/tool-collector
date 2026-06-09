@@ -11,6 +11,9 @@ class FakeCollection:
         self.calls = []
         self.deleted = []
 
+    def find_one(self, query, projection):
+        return None
+
     def update_one(self, query, update, upsert):
         self.calls.append((query, update, upsert))
         return FakeResult()

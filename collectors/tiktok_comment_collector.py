@@ -22,6 +22,8 @@ UI_TEXT_VALUES = {
     "view previous replies",
     "see translation",
     "more",
+    "trả lời",
+    "ẩn",
 }
 
 
@@ -123,6 +125,7 @@ def wait_for_comments(page: Page, timeout_ms: int | None = None) -> None:
     selector = ", ".join(selectors.COMMENT_CONTAINER_CANDIDATES + selectors.COMMENT_BLOCK_CANDIDATES)
     try:
         page.locator(selector).first.wait_for(state="visible", timeout=timeout)
+        page.locator('[data-e2e^="comment-level-1"]').first.wait_for(state="visible", timeout=timeout)
     except PlaywrightTimeoutError:
         # TikTok may lazy-load comments after scroll; caller can continue with debug output.
         pass
@@ -135,7 +138,7 @@ def is_comment_panel_open(page: Page) -> bool:
                 """
                 () => {
                     const bodyText = document.body.innerText || "";
-                    if (/Bình luận\\s*\\(\\d+\\)|Comments\\s*\\(\\d+\\)/i.test(bodyText)) return true;
+                    if (/B\\u00ecnh lu\\u1eadn\\s*\\(\\d+\\)|Comments\\s*\\(\\d+\\)/i.test(bodyText)) return true;
                     return Boolean(document.querySelector('[data-e2e^="comment-username-"], [data-e2e^="comment-level-"]'));
                 }
                 """
@@ -248,8 +251,8 @@ def get_target_comment_count(page: Page) -> int | None:
                 .filter(Boolean);
 
             const tabPatterns = [
-                /(?:Bình luận|Comments)\\s*\\((\\d+)\\)/i,
-                /(?:Bình luận|Comments)\\s+(\\d+)/i,
+                /(?:B\\u00ecnh lu\\u1eadn|Comments)\\s*\\((\\d+)\\)/i,
+                /(?:B\\u00ecnh lu\\u1eadn|Comments)\\s+(\\d+)/i,
             ];
             for (const text of visibleText) {
                 for (const pattern of tabPatterns) {
@@ -265,6 +268,39 @@ def get_target_comment_count(page: Page) -> int | None:
         """
     )
     return int(count) if count else None
+
+
+def reset_comment_scroll(page: Page) -> None:
+    page.evaluate(
+        """
+        () => {
+            const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+            const candidates = [...document.querySelectorAll("div, section, aside")]
+                .map((el) => {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    const canScroll = el.scrollHeight > el.clientHeight + 80;
+                    const visible = rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+                    const rightSide = rect.left > viewportWidth * 0.45;
+                    const text = (el.innerText || el.textContent || "").toLowerCase();
+                    const likelyComments = text.includes("comments")
+                        || text.includes("reply")
+                        || text.includes("log in to comment")
+                        || text.includes("b\\u00ecnh lu\\u1eadn")
+                        || text.includes("tr\\u1ea3 l\\u1eddi");
+                    return { el, rect, canScroll, visible, rightSide, likelyComments, area: rect.width * rect.height };
+                })
+                .filter((item) => item.canScroll && item.visible && item.rightSide)
+                .sort((a, b) => {
+                    if (a.likelyComments !== b.likelyComments) return a.likelyComments ? -1 : 1;
+                    return b.area - a.area;
+                });
+
+            const target = candidates[0]?.el;
+            if (target) target.scrollTop = 0;
+        }
+        """
+    )
 
 
 def count_loaded_comment_blocks(page: Page) -> int:
@@ -326,7 +362,11 @@ def scroll_comment_area_once(page: Page) -> bool:
                     const visible = rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
                     const rightSide = rect.left > viewportWidth * 0.45;
                     const text = (el.innerText || el.textContent || "").toLowerCase();
-                    const likelyComments = text.includes("comments") || text.includes("reply") || text.includes("log in to comment");
+                    const likelyComments = text.includes("comments")
+                        || text.includes("reply")
+                        || text.includes("log in to comment")
+                        || text.includes("b\\u00ecnh lu\\u1eadn")
+                        || text.includes("tr\\u1ea3 l\\u1eddi");
                     return { el, rect, canScroll, visible, rightSide, likelyComments, area: rect.width * rect.height };
                 })
                 .filter((item) => item.canScroll && item.visible && item.rightSide)
@@ -429,6 +469,10 @@ def count_reply_buttons(page: Page) -> int:
                 .filter((el) => {
                     const text = (el.innerText || el.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
                     if (!text) return false;
+                    if (/^tr\\u1ea3 l\\u1eddi$/i.test(text) || /^reply$/i.test(text)) return false;
+                    if (/^\\u1ea9n$/i.test(text) || /^hide$/i.test(text)) return false;
+                    if (/xem\\s+\\d+\\s+c\\u00e2u tr\\u1ea3 l\\u1eddi/i.test(text)) return true;
+                    if (/xem th\\u00eam\\s+\\d*/i.test(text)) return true;
                     return normalizedPatterns.some((pattern) => text.includes(pattern));
                 }).length;
         }
@@ -440,6 +484,45 @@ def count_reply_buttons(page: Page) -> int:
 def open_replies(page: Page, max_clicks: int = 30) -> int:
     clicked = 0
     patterns = selectors.REPLY_BUTTON_TEXT_PATTERNS
+
+    clicked += page.evaluate(
+        """
+        (maxClicks) => {
+            const isVisible = (el) => {
+                const rect = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+            };
+            const isReplyExpander = (text) => {
+                const value = text.replace(/\\s+/g, " ").trim();
+                if (!value) return false;
+                if (/^tr\\u1ea3 l\\u1eddi$/i.test(value) || /^reply$/i.test(value)) return false;
+                if (/^\\u1ea9n$/i.test(value) || /^hide$/i.test(value)) return false;
+                return /view.*repl/i.test(value)
+                    || /more replies/i.test(value)
+                    || /xem\\s+\\d+\\s+c\\u00e2u tr\\u1ea3 l\\u1eddi/i.test(value)
+                    || /xem th\\u00eam\\s+\\d*/i.test(value)
+                    || /c\\u00e2u tr\\u1ea3 l\\u1eddi/i.test(value);
+            };
+
+            let clicked = 0;
+            const candidates = [...document.querySelectorAll("button, [role='button'], div, span, p")]
+                .filter(isVisible)
+                .filter((el) => isReplyExpander(el.innerText || el.textContent || ""));
+
+            for (const candidate of candidates) {
+                if (clicked >= maxClicks) break;
+                const target = candidate.closest("button, [role='button']") || candidate;
+                target.click();
+                clicked += 1;
+            }
+            return clicked;
+        }
+        """,
+        max_clicks,
+    )
+    if clicked:
+        page.wait_for_timeout(1200)
 
     for pattern in patterns:
         if clicked >= max_clicks:
@@ -671,9 +754,11 @@ def collect_from_video(
     debug: bool = False,
 ) -> list[dict]:
     source_url = normalize_source_url(video_url)
-    page.goto(video_url, wait_until="domcontentloaded", timeout=settings.page_timeout_ms)
+    page.goto(source_url, wait_until="domcontentloaded", timeout=settings.page_timeout_ms)
     page.wait_for_timeout(3000)
     click_open_comment_panel(page)
+    reset_comment_scroll(page)
+    page.wait_for_timeout(1000)
     blocker = detect_access_blocker(page)
     if blocker:
         if debug:

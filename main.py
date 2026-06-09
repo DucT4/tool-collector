@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
                     max_reply_clicks=args.max_reply_clicks,
                     debug=args.debug,
                 )
-                saved = save_comments(comments, source_url, collection=collection)
+                saved = save_comments(comments, source_url, collection=collection, prune_stale=False)
                 reply_count = sum(len(item.get("replies", [])) for item in comments)
                 total_items = len(comments) + reply_count
                 elapsed = time.perf_counter() - start

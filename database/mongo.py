@@ -23,12 +23,27 @@ def save_comments(items: list[dict], source_url: str, collection: Collection | N
     current_keys = []
 
     for item in items:
+        query = {
+            "source_url": source_url,
+            "name": item.get("name", ""),
+            "comment": item.get("comment", ""),
+        }
+        existing = target.find_one(query, {"replies": 1})
+        replies = list(existing.get("replies", [])) if existing else []
+        reply_keys = {(reply.get("name", ""), reply.get("comment", "")) for reply in replies}
+        for reply in item.get("replies", []):
+            reply_key = (reply.get("name", ""), reply.get("comment", ""))
+            if reply_key in reply_keys:
+                continue
+            reply_keys.add(reply_key)
+            replies.append(reply)
+
         document = {
             "platform": "tiktok",
             "source_url": source_url,
             "name": item.get("name", ""),
             "comment": item.get("comment", ""),
-            "replies": item.get("replies", []),
+            "replies": replies,
             "collected_at": datetime.now(timezone.utc),
         }
         current_keys.append(
@@ -38,15 +53,7 @@ def save_comments(items: list[dict], source_url: str, collection: Collection | N
                 "comment": document["comment"],
             }
         )
-        result = target.update_one(
-            {
-                "source_url": document["source_url"],
-                "name": document["name"],
-                "comment": document["comment"],
-            },
-            {"$set": document},
-            upsert=True,
-        )
+        result = target.update_one(query, {"$set": document}, upsert=True)
         if result.upserted_id is not None or result.modified_count:
             saved += 1
 

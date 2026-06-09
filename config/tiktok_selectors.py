@@ -47,4 +47,6 @@ REPLY_BUTTON_TEXT_PATTERNS = [
     "View previous replies",
     "more replies",
     "replies",
+    "câu trả lời",
+    "Xem thêm",
 ]
