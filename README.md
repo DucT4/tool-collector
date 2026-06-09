@@ -21,10 +21,10 @@ python main.py "https://www.tiktok.com/@user/video/123456789" `
 The tool calls:
 
 ```text
-GET http://127.0.0.1:9495/api/v3/profiles/start/{profile_id}
+GET http://127.0.0.1:9495/api/v1/profiles/start/{profile_id}
 ```
 
-Then it reads `remote_debugging_port` from the API response and connects Playwright to:
+Then it reads `remote_debugging_port` or `remote_debugging_address` from the API response and connects Playwright to:
 
 ```text
 http://127.0.0.1:{remote_debugging_port}

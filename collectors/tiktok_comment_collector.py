@@ -128,6 +128,23 @@ def wait_for_comments(page: Page, timeout_ms: int | None = None) -> None:
         pass
 
 
+def is_comment_panel_open(page: Page) -> bool:
+    try:
+        return bool(
+            page.evaluate(
+                """
+                () => {
+                    const bodyText = document.body.innerText || "";
+                    if (/Bình luận\\s*\\(\\d+\\)|Comments\\s*\\(\\d+\\)/i.test(bodyText)) return true;
+                    return Boolean(document.querySelector('[data-e2e^="comment-username-"], [data-e2e^="comment-level-"]'));
+                }
+                """
+            )
+        )
+    except Exception:
+        return False
+
+
 def click_open_comment_panel(page: Page) -> bool:
     """
     TikTok often lands on a feed-style video page where comments are hidden
@@ -140,16 +157,8 @@ def click_open_comment_panel(page: Page) -> bool:
         '[role="button"][aria-label*="comment" i]',
     ]
 
-    for selector in click_selectors:
-        try:
-            locator = page.locator(selector).first
-            if not locator.count() or not locator.is_visible(timeout=1000):
-                continue
-            locator.click(timeout=2000)
-            page.wait_for_timeout(2500)
-            return True
-        except Exception:
-            continue
+    if is_comment_panel_open(page):
+        return True
 
     clicked = page.evaluate(
         """
@@ -164,7 +173,14 @@ def click_open_comment_panel(page: Page) -> bool:
             ].filter(isVisible);
 
             for (const candidate of candidates) {
-                const target = candidate.closest('button, [role="button"], div');
+                let target = candidate.closest('button, [role="button"]');
+                let cursorTarget = candidate;
+                for (let i = 0; i < 6 && cursorTarget && !target; i += 1) {
+                    const style = window.getComputedStyle(cursorTarget);
+                    if (style.cursor === "pointer") target = cursorTarget;
+                    cursorTarget = cursorTarget.parentElement;
+                }
+                target = target || candidate.parentElement;
                 if (target) {
                     target.click();
                     return true;
@@ -176,7 +192,25 @@ def click_open_comment_panel(page: Page) -> bool:
     )
     if clicked:
         page.wait_for_timeout(2500)
-    return bool(clicked)
+        if is_comment_panel_open(page):
+            return True
+
+    for selector in click_selectors:
+        try:
+            locator = page.locator(selector).first
+            if not locator.count() or not locator.is_visible(timeout=1000):
+                continue
+            box = locator.bounding_box(timeout=1000)
+            if not box:
+                continue
+            page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+            page.wait_for_timeout(2500)
+            if is_comment_panel_open(page):
+                return True
+        except Exception:
+            continue
+
+    return False
 
 
 def detect_access_blocker(page: Page) -> str | None:

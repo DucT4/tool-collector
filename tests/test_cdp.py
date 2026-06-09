@@ -1,4 +1,4 @@
-from browser.cdp import _find_remote_debugging_port
+from browser.cdp import _extract_remote_debugging_port_from_command_line, _find_remote_debugging_port
 
 
 def test_find_remote_debugging_port_at_root():
@@ -21,3 +21,9 @@ def test_find_remote_debugging_port_from_address():
     payload = {"data": {"remote_debugging_address": "127.0.0.1:53378"}}
 
     assert _find_remote_debugging_port(payload) == 53378
+
+
+def test_extract_remote_debugging_port_from_command_line():
+    command_line = 'chrome.exe --user-data-dir="D:\\profile" --remote-debugging-port=59804 --lang=vi'
+
+    assert _extract_remote_debugging_port_from_command_line(command_line) == 59804
