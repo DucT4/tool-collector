@@ -20,6 +20,8 @@ def _int_env(name: str, default: int) -> int:
 @dataclass(frozen=True)
 class Settings:
     cdp_url: str = os.getenv("CDP_URL", "http://localhost:9222")
+    gpm_api_base: str = os.getenv("GPM_API_BASE", "http://127.0.0.1:19995")
+    gpm_profile_id: str = os.getenv("GPM_PROFILE_ID", "")
     mongo_url: str = os.getenv("MONGO_URL", "mongodb://localhost:27017")
     mongo_db: str = os.getenv("MONGO_DB", "social_data")
     mongo_collection: str = os.getenv("MONGO_COLLECTION", "tiktok_comments")

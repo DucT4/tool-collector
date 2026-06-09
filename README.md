@@ -1,6 +1,6 @@
 # TikTok Comment Collector
 
-Python tool to collect public TikTok comments that are visible in an existing Chrome/GPMLogin browser through CDP.
+Python tool to collect public TikTok comments that are visible in Chrome/GPMLogin through CDP.
 
 ## Setup
 
@@ -8,15 +8,44 @@ Python tool to collect public TikTok comments that are visible in an existing Ch
 python -m pip install -r requirements.txt
 ```
 
-Open Chrome with CDP:
+## GPMLogin Flow
+
+Keep the GPMLogin app open, then run with a profile id:
+
+```powershell
+python main.py "https://www.tiktok.com/@user/video/123456789" `
+  --gpm-profile-id "YOUR_PROFILE_ID" `
+  --debug
+```
+
+The tool calls:
+
+```text
+GET http://127.0.0.1:19995/api/v3/profiles/start/{profile_id}
+```
+
+Then it reads `remote_debugging_port` from the API response and connects Playwright to:
+
+```text
+http://127.0.0.1:{remote_debugging_port}
+```
+
+You can also set these in `.env`:
+
+```env
+GPM_API_BASE=http://127.0.0.1:19995
+GPM_PROFILE_ID=YOUR_PROFILE_ID
+```
+
+## Manual Chrome CDP Flow
+
+Open Chrome with CDP if you do not use GPMLogin:
 
 ```powershell
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" `
   --remote-debugging-port=9222 `
   --user-data-dir="C:\chrome-cdp-profile"
 ```
-
-For GPMLogin, set `CDP_URL` to the profile CDP port.
 
 Copy `.env.example` to `.env` and adjust MongoDB/CDP values.
 

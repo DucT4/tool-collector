@@ -2,7 +2,7 @@ import argparse
 import sys
 import time
 
-from browser.cdp import connect_to_browser
+from browser.cdp import connect_to_browser, connect_to_gpm_profile
 from collectors.tiktok_comment_collector import collect_from_video, normalize_source_url
 from config.settings import settings
 from database.mongo import get_collection, save_comments
@@ -12,6 +12,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Collect public TikTok comments from a CDP browser.")
     parser.add_argument("urls", nargs="+", help="TikTok video URL(s) to collect.")
     parser.add_argument("--cdp-url", default=settings.cdp_url, help="Chrome/GPMLogin CDP URL.")
+    parser.add_argument(
+        "--gpm-profile-id",
+        default=settings.gpm_profile_id,
+        help="GPMLogin profile id. When provided, the tool starts this profile through GPMLogin API.",
+    )
+    parser.add_argument("--gpm-api-base", default=settings.gpm_api_base, help="GPMLogin local API base URL.")
     parser.add_argument("--scroll-times", type=int, default=settings.scroll_times)
     parser.add_argument("--max-reply-clicks", type=int, default=settings.max_reply_clicks)
     parser.add_argument("--debug", action="store_true", help="Dump selector candidates and screenshot on empty results.")
@@ -24,7 +30,13 @@ def main(argv: list[str] | None = None) -> int:
     page = None
 
     try:
-        playwright, _browser, context = connect_to_browser(args.cdp_url)
+        if args.gpm_profile_id:
+            (playwright, _browser, context), cdp_url = connect_to_gpm_profile(args.gpm_profile_id, args.gpm_api_base)
+            print(f"[GPM] profile={args.gpm_profile_id} cdp={cdp_url}")
+        else:
+            playwright, _browser, context = connect_to_browser(args.cdp_url)
+            print(f"[CDP] cdp={args.cdp_url}")
+
         page = context.new_page()
         collection = get_collection()
 
