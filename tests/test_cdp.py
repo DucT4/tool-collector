@@ -15,3 +15,9 @@ def test_find_remote_debugging_port_camel_case():
     payload = {"data": {"remoteDebuggingPort": 35003}}
 
     assert _find_remote_debugging_port(payload) == 35003
+
+
+def test_find_remote_debugging_port_from_address():
+    payload = {"data": {"remote_debugging_address": "127.0.0.1:53378"}}
+
+    assert _find_remote_debugging_port(payload) == 53378

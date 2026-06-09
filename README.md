@@ -21,7 +21,7 @@ python main.py "https://www.tiktok.com/@user/video/123456789" `
 The tool calls:
 
 ```text
-GET http://127.0.0.1:19995/api/v3/profiles/start/{profile_id}
+GET http://127.0.0.1:9495/api/v3/profiles/start/{profile_id}
 ```
 
 Then it reads `remote_debugging_port` from the API response and connects Playwright to:
@@ -33,11 +33,11 @@ http://127.0.0.1:{remote_debugging_port}
 You can also set these in `.env`:
 
 ```env
-GPM_API_BASE=http://127.0.0.1:19995
+GPM_API_BASE=http://127.0.0.1:9495
 GPM_PROFILE_ID=YOUR_PROFILE_ID
 ```
 
-If you see `Cannot connect to GPMLogin API at http://127.0.0.1:19995`, the GPMLogin REST API is not listening on that port. Open GPMLogin, enable/start the local API, then either update `GPM_API_BASE` or pass:
+If you see `Cannot connect to GPMLogin API`, the GPMLogin REST API is not listening on the configured port. Open GPMLogin, check Settings > API Gateway > Local API url, then update `GPM_API_BASE` or pass:
 
 ```powershell
 python main.py "https://www.tiktok.com/@user/video/123456789" `

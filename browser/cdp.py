@@ -1,4 +1,5 @@
 import json
+import re
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
@@ -17,6 +18,12 @@ def _find_remote_debugging_port(payload) -> int | None:
             value = payload.get(key)
             if value:
                 return int(value)
+        for key in ("remote_debugging_address", "remoteDebuggingAddress", "debugging_address", "debuggingAddress"):
+            value = payload.get(key)
+            if value:
+                match = re.search(r":(\d+)$", str(value))
+                if match:
+                    return int(match.group(1))
         for value in payload.values():
             found = _find_remote_debugging_port(value)
             if found:
@@ -40,12 +47,17 @@ def start_gpm_profile(profile_id: str, api_base: str | None = None) -> str:
         raise GPMLoginError(f"GPMLogin start profile failed: HTTP {exc.code}") from exc
     except URLError as exc:
         raise GPMLoginError(f"Cannot connect to GPMLogin API at {base}: {exc.reason}") from exc
+    except OSError as exc:
+        raise GPMLoginError(f"GPMLogin API connection failed at {base}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise GPMLoginError("GPMLogin API returned invalid JSON") from exc
 
     port = _find_remote_debugging_port(payload)
     if not port:
-        raise GPMLoginError(f"GPMLogin API response missing remote_debugging_port: {payload}")
+        raise GPMLoginError(
+            "GPMLogin API response missing remote_debugging_port/remote_debugging_address. "
+            f"Response: {payload}"
+        )
 
     return f"http://127.0.0.1:{port}"
 
