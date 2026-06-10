@@ -390,19 +390,96 @@ def wait_for_comments(page: Page, timeout_ms: int | None = None) -> None:
         pass
 
 
+COMMENT_TAB_SCRIPT = """
+() => {
+    const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const isVisible = (el) => {
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+    };
+    const isCommentText = (text) => /^b\\u00ecnh lu\\u1eadn(?:\\s*\\(\\d+\\))?$/.test(text) || /^comments(?:\\s*\\(\\d+\\))?$/.test(text);
+    const isRecommendedText = (text) => /^b\\u1ea1n c\\u00f3 th\\u1ec3 th\\u00edch$/.test(text) || /^you may like$/.test(text);
+    const tabCandidates = [...document.querySelectorAll("button, [role='tab'], [role='button'], div, span")]
+        .filter(isVisible)
+        .map((el) => {
+            const text = normalize(el.innerText || el.textContent || "");
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            const ariaSelected = el.getAttribute("aria-selected") === "true";
+            const selectedClass = /active|selected|current/i.test(el.className || "");
+            const underline = style.borderBottomWidth && parseFloat(style.borderBottomWidth) >= 2;
+            return { el, text, rect, active: ariaSelected || selectedClass || underline };
+        })
+        .filter((item) => isCommentText(item.text) || isRecommendedText(item.text));
+
+    const comment = tabCandidates.find((item) => isCommentText(item.text));
+    const recommended = tabCandidates.find((item) => isRecommendedText(item.text));
+    const hasCommentNodes = Boolean(document.querySelector('[data-e2e^="comment-username-"], [data-e2e^="comment-level-"]'));
+    const bodyText = normalize(document.body.innerText || "");
+    const hasCommentEmptyState = bodyText.includes("b\\u1eaft \\u0111\\u1ea7u cu\\u1ed9c tr\\u00f2 chuy\\u1ec7n")
+        || bodyText.includes("start the conversation")
+        || bodyText.includes("\\u0111\\u0103ng nh\\u1eadp \\u0111\\u1ec3 b\\u00ecnh lu\\u1eadn")
+        || bodyText.includes("log in to comment");
+
+    return {
+        hasCommentNodes,
+        hasCommentEmptyState,
+        hasCommentTab: Boolean(comment),
+        commentActive: Boolean(comment?.active) || (Boolean(comment) && !recommended?.active && (hasCommentNodes || hasCommentEmptyState)),
+        recommendedActive: Boolean(recommended?.active),
+    };
+}
+"""
+
+
 def is_comment_panel_open(page: Page) -> bool:
     try:
         return bool(
             page.evaluate(
-                """
-                () => {
-                    const bodyText = document.body.innerText || "";
-                    if (/B\\u00ecnh lu\\u1eadn\\s*\\(\\d+\\)|Comments\\s*\\(\\d+\\)/i.test(bodyText)) return true;
-                    return Boolean(document.querySelector('[data-e2e^="comment-username-"], [data-e2e^="comment-level-"]'));
-                }
+                f"""
+                () => {{
+                    const state = ({COMMENT_TAB_SCRIPT})();
+                    return state.hasCommentNodes || (state.hasCommentTab && state.commentActive && state.hasCommentEmptyState);
+                }}
                 """
             )
         )
+    except Exception:
+        return False
+
+
+def ensure_comment_tab_active(page: Page) -> bool:
+    try:
+        if page.evaluate(f"() => ({COMMENT_TAB_SCRIPT})().commentActive"):
+            return True
+
+        clicked = page.evaluate(
+            """
+            () => {
+                const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+                const isVisible = (el) => {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+                };
+                const isCommentText = (text) => /^b\\u00ecnh lu\\u1eadn(?:\\s*\\(\\d+\\))?$/.test(text) || /^comments(?:\\s*\\(\\d+\\))?$/.test(text);
+                const candidates = [...document.querySelectorAll("button, [role='tab'], [role='button'], div, span")]
+                    .filter(isVisible)
+                    .filter((el) => isCommentText(normalize(el.innerText || el.textContent || "")));
+
+                for (const candidate of candidates) {
+                    const target = candidate.closest("button, [role='tab'], [role='button']") || candidate;
+                    target.click();
+                    return true;
+                }
+                return false;
+            }
+            """
+        )
+        if clicked:
+            page.wait_for_timeout(1500)
+        return bool(page.evaluate(f"() => ({COMMENT_TAB_SCRIPT})().commentActive"))
     except Exception:
         return False
 
@@ -419,7 +496,7 @@ def click_open_comment_panel(page: Page) -> bool:
         '[role="button"][aria-label*="comment" i]',
     ]
 
-    if is_comment_panel_open(page):
+    if ensure_comment_tab_active(page) and is_comment_panel_open(page):
         return True
 
     clicked = page.evaluate(
@@ -454,6 +531,7 @@ def click_open_comment_panel(page: Page) -> bool:
     )
     if clicked:
         page.wait_for_timeout(2500)
+        ensure_comment_tab_active(page)
         if is_comment_panel_open(page):
             return True
 
@@ -467,12 +545,13 @@ def click_open_comment_panel(page: Page) -> bool:
                 continue
             page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
             page.wait_for_timeout(2500)
+            ensure_comment_tab_active(page)
             if is_comment_panel_open(page):
                 return True
         except Exception:
             continue
 
-    return False
+    return ensure_comment_tab_active(page)
 
 
 def detect_access_blocker(page: Page) -> str | None:
@@ -542,14 +621,16 @@ def reset_comment_scroll(page: Page) -> None:
                     const visible = rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
                     const rightSide = rect.left > viewportWidth * 0.45;
                     const text = (el.innerText || el.textContent || "").toLowerCase();
+                    const recommendedPanel = text.includes("b\\u1ea1n c\\u00f3 th\\u1ec3 th\\u00edch") || text.includes("you may like");
                     const likelyComments = text.includes("comments")
                         || text.includes("reply")
                         || text.includes("log in to comment")
                         || text.includes("b\\u00ecnh lu\\u1eadn")
-                        || text.includes("tr\\u1ea3 l\\u1eddi");
-                    return { el, rect, canScroll, visible, rightSide, likelyComments, area: rect.width * rect.height };
+                        || text.includes("tr\\u1ea3 l\\u1eddi")
+                        || Boolean(el.querySelector('[data-e2e^="comment-username-"], [data-e2e^="comment-level-"]'));
+                    return { el, rect, canScroll, visible, rightSide, likelyComments, recommendedPanel, area: rect.width * rect.height };
                 })
-                .filter((item) => item.canScroll && item.visible && item.rightSide)
+                .filter((item) => item.canScroll && item.visible && item.rightSide && !item.recommendedPanel)
                 .sort((a, b) => {
                     if (a.likelyComments !== b.likelyComments) return a.likelyComments ? -1 : 1;
                     return b.area - a.area;
@@ -621,14 +702,16 @@ def scroll_comment_area_once(page: Page) -> bool:
                     const visible = rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
                     const rightSide = rect.left > viewportWidth * 0.45;
                     const text = (el.innerText || el.textContent || "").toLowerCase();
+                    const recommendedPanel = text.includes("b\\u1ea1n c\\u00f3 th\\u1ec3 th\\u00edch") || text.includes("you may like");
                     const likelyComments = text.includes("comments")
                         || text.includes("reply")
                         || text.includes("log in to comment")
                         || text.includes("b\\u00ecnh lu\\u1eadn")
-                        || text.includes("tr\\u1ea3 l\\u1eddi");
-                    return { el, rect, canScroll, visible, rightSide, likelyComments, area: rect.width * rect.height };
+                        || text.includes("tr\\u1ea3 l\\u1eddi")
+                        || Boolean(el.querySelector('[data-e2e^="comment-username-"], [data-e2e^="comment-level-"]'));
+                    return { el, rect, canScroll, visible, rightSide, likelyComments, recommendedPanel, area: rect.width * rect.height };
                 })
-                .filter((item) => item.canScroll && item.visible && item.rightSide)
+                .filter((item) => item.canScroll && item.visible && item.rightSide && !item.recommendedPanel)
                 .sort((a, b) => {
                     if (a.likelyComments !== b.likelyComments) return a.likelyComments ? -1 : 1;
                     return b.area - a.area;
@@ -851,6 +934,7 @@ def expand_comments_and_replies(
 
     while rounds < hard_round_limit:
         rounds += 1
+        ensure_comment_tab_active(page)
         scroll_comment_area_once(page)
         if network_monitor:
             network_monitor.wait_for_idle(page)
