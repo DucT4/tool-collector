@@ -1,10 +1,21 @@
-from collectors.tiktok_comment_collector import clean_comments, merge_comment_items, normalize_source_url
+from collectors.tiktok_comment_collector import (
+    clean_comments,
+    is_comment_network_url,
+    merge_comment_items,
+    normalize_source_url,
+)
 
 
 def test_normalize_source_url_strips_query_hash_and_trailing_slash():
     url = "https://www.tiktok.com/@user/video/123456/?is_from_webapp=1#comments"
 
     assert normalize_source_url(url) == "https://www.tiktok.com/@user/video/123456"
+
+
+def test_is_comment_network_url_matches_comment_and_reply_apis():
+    assert is_comment_network_url("https://www.tiktok.com/api/comment/list/?aweme_id=1")
+    assert is_comment_network_url("https://www.tiktok.com/api/comment/list/reply/?comment_id=2")
+    assert not is_comment_network_url("https://www.tiktok.com/api/post/item_list/")
 
 
 def test_clean_comments_trims_and_dedupes_comments_and_replies():

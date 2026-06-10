@@ -1,10 +1,11 @@
 import json
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Page, Request, TimeoutError as PlaywrightTimeoutError
 
 from config import tiktok_selectors as selectors
 from config.settings import settings
@@ -12,6 +13,16 @@ from config.settings import settings
 
 class TikTokAccessBlocked(RuntimeError):
     pass
+
+
+COMMENT_NETWORK_IDLE_MS = 1800
+COMMENT_NETWORK_IDLE_TIMEOUT_MS = 9000
+COMMENT_NETWORK_URL_MARKERS = (
+    "comment/list",
+    "comment/list/reply",
+    "/api/comment/",
+    "aweme/v1/web/comment",
+)
 
 
 UI_TEXT_VALUES = {
@@ -25,6 +36,69 @@ UI_TEXT_VALUES = {
     "trả lời",
     "ẩn",
 }
+
+
+def is_comment_network_url(url: str) -> bool:
+    lowered = url.lower()
+    return any(marker in lowered for marker in COMMENT_NETWORK_URL_MARKERS)
+
+
+class CommentNetworkMonitor:
+    def __init__(self) -> None:
+        self.pending: dict[int, str] = {}
+        self.request_count = 0
+        self.finished_count = 0
+        self.last_activity = time.monotonic()
+        self._handlers = []
+
+    def start(self, page: Page) -> None:
+        def on_request(request: Request) -> None:
+            if not is_comment_network_url(request.url):
+                return
+            self.pending[id(request)] = request.url
+            self.request_count += 1
+            self.last_activity = time.monotonic()
+
+        def on_request_done(request: Request) -> None:
+            if id(request) not in self.pending and not is_comment_network_url(request.url):
+                return
+            self.pending.pop(id(request), None)
+            self.finished_count += 1
+            self.last_activity = time.monotonic()
+
+        page.on("request", on_request)
+        page.on("requestfinished", on_request_done)
+        page.on("requestfailed", on_request_done)
+        self._handlers = [
+            ("request", on_request),
+            ("requestfinished", on_request_done),
+            ("requestfailed", on_request_done),
+        ]
+
+    def stop(self, page: Page) -> None:
+        for event_name, handler in self._handlers:
+            try:
+                page.remove_listener(event_name, handler)
+            except Exception:
+                pass
+        self._handlers = []
+
+    def is_idle(self, idle_ms: int = COMMENT_NETWORK_IDLE_MS) -> bool:
+        idle_for_ms = (time.monotonic() - self.last_activity) * 1000
+        return not self.pending and idle_for_ms >= idle_ms
+
+    def wait_for_idle(
+        self,
+        page: Page,
+        idle_ms: int = COMMENT_NETWORK_IDLE_MS,
+        timeout_ms: int = COMMENT_NETWORK_IDLE_TIMEOUT_MS,
+    ) -> bool:
+        deadline = time.monotonic() + timeout_ms / 1000
+        while time.monotonic() < deadline:
+            if self.is_idle(idle_ms=idle_ms):
+                return True
+            page.wait_for_timeout(250)
+        return self.is_idle(idle_ms=idle_ms)
 
 
 def normalize_source_url(url: str) -> str:
@@ -555,26 +629,40 @@ def expand_comments_and_replies(
     max_reply_clicks: int,
     target_comment_count: int | None = None,
     source_url: str | None = None,
-) -> tuple[int, int, list[dict]]:
+    network_monitor: CommentNetworkMonitor | None = None,
+) -> tuple[int, int, list[dict], dict]:
     total_reply_clicks = 0
     stable_rounds = 0
     previous_total = count_loaded_comment_and_reply_blocks(page)
     accumulated = collect_comment_data(page, source_url=source_url)
+    rounds = 0
+    hard_round_limit = scroll_times
+    if target_comment_count:
+        hard_round_limit = max(scroll_times, min(target_comment_count * 2, 1500))
 
-    for _ in range(scroll_times):
+    while rounds < hard_round_limit:
+        rounds += 1
         scroll_comment_area_once(page)
-        page.wait_for_timeout(1200)
+        if network_monitor:
+            network_monitor.wait_for_idle(page)
+        else:
+            page.wait_for_timeout(1200)
         accumulated = merge_comment_items(accumulated, collect_comment_data(page, source_url=source_url))
 
         remaining_click_budget = max_reply_clicks - total_reply_clicks
         if remaining_click_budget > 0:
             total_reply_clicks += open_replies(page, max_clicks=remaining_click_budget)
-            page.wait_for_timeout(900)
+            if network_monitor:
+                network_monitor.wait_for_idle(page)
+            else:
+                page.wait_for_timeout(900)
             accumulated = merge_comment_items(accumulated, collect_comment_data(page, source_url=source_url))
 
         current_total = len(accumulated) + sum(len(item.get("replies", [])) for item in accumulated)
         current_comments = count_loaded_comment_blocks(page)
-        has_reply_buttons = count_reply_buttons(page) > 0 and total_reply_clicks < max_reply_clicks
+        visible_reply_buttons = count_reply_buttons(page) > 0
+        can_click_reply_buttons = visible_reply_buttons and total_reply_clicks < max_reply_clicks
+        network_is_idle = network_monitor is None or network_monitor.is_idle()
 
         reached_comment_target = target_comment_count is None or current_total >= target_comment_count
         if current_total <= previous_total:
@@ -583,10 +671,29 @@ def expand_comments_and_replies(
             stable_rounds = 0
             previous_total = current_total
 
-        if reached_comment_target and not has_reply_buttons and stable_rounds >= 3:
-            return current_comments, total_reply_clicks, accumulated
+        no_more_visible_load = not visible_reply_buttons and network_is_idle and stable_rounds >= 3
+        soft_limit_reached = rounds >= scroll_times
+        if no_more_visible_load and (reached_comment_target or soft_limit_reached):
+            return current_comments, total_reply_clicks, accumulated, {
+                "rounds": rounds,
+                "hard_round_limit": hard_round_limit,
+                "stable_rounds": stable_rounds,
+                "stop_reason": "network_idle_no_dom_growth",
+            }
+        if visible_reply_buttons and not can_click_reply_buttons and network_is_idle and stable_rounds >= 3:
+            return current_comments, total_reply_clicks, accumulated, {
+                "rounds": rounds,
+                "hard_round_limit": hard_round_limit,
+                "stable_rounds": stable_rounds,
+                "stop_reason": "max_reply_clicks_reached",
+            }
 
-    return count_loaded_comment_blocks(page), total_reply_clicks, accumulated
+    return count_loaded_comment_blocks(page), total_reply_clicks, accumulated, {
+        "rounds": rounds,
+        "hard_round_limit": hard_round_limit,
+        "stable_rounds": stable_rounds,
+        "stop_reason": "hard_round_limit",
+    }
 
 
 def collect_comment_data(page: Page, source_url: str | None = None) -> list[dict]:
@@ -754,35 +861,53 @@ def collect_from_video(
     debug: bool = False,
 ) -> list[dict]:
     source_url = normalize_source_url(video_url)
-    page.goto(source_url, wait_until="domcontentloaded", timeout=settings.page_timeout_ms)
-    page.wait_for_timeout(3000)
-    click_open_comment_panel(page)
-    reset_comment_scroll(page)
-    page.wait_for_timeout(1000)
-    blocker = detect_access_blocker(page)
-    if blocker:
+    network_monitor = CommentNetworkMonitor()
+    network_monitor.start(page)
+    try:
+        page.goto(source_url, wait_until="domcontentloaded", timeout=settings.page_timeout_ms)
+        network_monitor.wait_for_idle(page)
+        page.wait_for_timeout(1000)
+        click_open_comment_panel(page)
+        network_monitor.wait_for_idle(page)
+        reset_comment_scroll(page)
+        page.wait_for_timeout(1000)
+        blocker = detect_access_blocker(page)
+        if blocker:
+            if debug:
+                dump_debug_artifacts(page)
+            raise TikTokAccessBlocked(blocker)
+        wait_for_comments(page)
+
+        target_count = get_target_comment_count(page)
+        _, reply_clicks, accumulated_comments, expand_stats = expand_comments_and_replies(
+            page,
+            scroll_times=scroll_times or settings.scroll_times,
+            max_reply_clicks=max_reply_clicks or settings.max_reply_clicks,
+            target_comment_count=target_count,
+            source_url=source_url,
+            network_monitor=network_monitor,
+        )
+
+        blocker = detect_access_blocker(page)
+        if blocker:
+            if debug:
+                dump_debug_artifacts(page)
+            raise TikTokAccessBlocked(blocker)
+
+        comments = merge_comment_items(accumulated_comments, collect_comment_data(page, source_url=source_url))
         if debug:
-            dump_debug_artifacts(page)
-        raise TikTokAccessBlocked(blocker)
-    wait_for_comments(page)
+            total_replies = sum(len(item.get("replies", [])) for item in comments)
+            print(
+                "[DEBUG] target_comments="
+                f"{target_count} collected_comments={len(comments)} collected_replies={total_replies} "
+                f"reply_clicks={reply_clicks} scroll_rounds={expand_stats['rounds']} "
+                f"stop_reason={expand_stats['stop_reason']} "
+                f"comment_network_requests={network_monitor.request_count} "
+                f"pending_comment_network={len(network_monitor.pending)}"
+            )
+            if not comments:
+                dump_debug_artifacts(page)
 
-    target_count = get_target_comment_count(page)
-    _, _, accumulated_comments = expand_comments_and_replies(
-        page,
-        scroll_times=scroll_times or settings.scroll_times,
-        max_reply_clicks=max_reply_clicks or settings.max_reply_clicks,
-        target_comment_count=target_count,
-        source_url=source_url,
-    )
-
-    blocker = detect_access_blocker(page)
-    if blocker:
-        if debug:
-            dump_debug_artifacts(page)
-        raise TikTokAccessBlocked(blocker)
-
-    comments = merge_comment_items(accumulated_comments, collect_comment_data(page, source_url=source_url))
-    if debug and not comments:
-        dump_debug_artifacts(page)
-
-    return comments
+        return comments
+    finally:
+        network_monitor.stop(page)

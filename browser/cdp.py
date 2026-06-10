@@ -156,7 +156,14 @@ def connect_to_browser(cdp_url: str | None = None):
 
 
 def connect_to_gpm_profile(profile_id: str, api_base: str | None = None):
-    cdp_url = start_gpm_profile(profile_id, api_base=api_base)
+    try:
+        cdp_url = start_gpm_profile(profile_id, api_base=api_base)
+    except GPMLoginError:
+        existing_cdp_url = find_existing_gpm_cdp_url(profile_id)
+        if not existing_cdp_url:
+            raise
+        cdp_url = existing_cdp_url
+
     try:
         wait_for_cdp(cdp_url, timeout_seconds=10)
     except GPMLoginError:

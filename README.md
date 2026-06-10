@@ -72,6 +72,18 @@ Copy `.env.example` to `.env` and adjust MongoDB/CDP values.
 python main.py "https://www.tiktok.com/@user/video/123456789" --debug
 ```
 
+For videos with many comments or replies, raise the soft scroll and reply-click budgets:
+
+```powershell
+python main.py "https://www.tiktok.com/@user/video/123456789" `
+  --scroll-times 80 `
+  --max-reply-clicks 1000 `
+  --debug
+```
+
+The collector watches TikTok comment/reply network calls such as `comment/list` and `comment/list/reply`.
+It only stops after the comment DOM stops growing, no tracked comment/reply request is pending, and no visible reply expander remains. If `--debug` is enabled, the output includes `comment_network_requests`, `pending_comment_network`, `reply_clicks`, `scroll_rounds`, and `stop_reason`.
+
 The tool does not bypass login, captcha, or access controls. It only reads public content rendered in the browser DOM.
 
 ## Selector Updates

@@ -21,7 +21,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--scroll-times", type=int, default=settings.scroll_times)
     parser.add_argument("--max-reply-clicks", type=int, default=settings.max_reply_clicks)
     parser.add_argument("--debug", action="store_true", help="Dump selector candidates and screenshot on empty results.")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args.cdp_url_provided = any(arg == "--cdp-url" or arg.startswith("--cdp-url=") for arg in argv)
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,17 +33,23 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         try:
-            if args.gpm_profile_id:
+            use_gpm = bool(args.gpm_profile_id and not args.cdp_url_provided)
+            if use_gpm:
                 (playwright, _browser, context), cdp_url = connect_to_gpm_profile(args.gpm_profile_id, args.gpm_api_base)
                 print(f"[GPM] profile={args.gpm_profile_id} cdp={cdp_url}")
             else:
                 playwright, _browser, context = connect_to_browser(args.cdp_url)
                 print(f"[CDP] cdp={args.cdp_url}")
         except GPMLoginError as exc:
-            print(f"[GPM ERROR] {exc}")
-            print("[HINT] Open GPMLogin, enable/start its local API, then pass the correct API base:")
-            print("[HINT] python main.py <url> --gpm-profile-id <id> --gpm-api-base http://127.0.0.1:<api_port>")
-            print("[HINT] If the profile is already open, use --cdp-url http://127.0.0.1:<remote_debugging_port> instead.")
+            if args.gpm_profile_id and not args.cdp_url_provided:
+                print(f"[GPM ERROR] {exc}")
+                print("[HINT] Open GPMLogin, enable/start its local API, then pass the correct API base:")
+                print("[HINT] python main.py <url> --gpm-profile-id <id> --gpm-api-base http://127.0.0.1:<api_port>")
+                print("[HINT] If the profile is already open, use --cdp-url http://127.0.0.1:<remote_debugging_port> instead.")
+            else:
+                print(f"[CDP ERROR] {exc}")
+                print("[HINT] Start Chrome/GPMLogin with a live remote debugging port, then pass:")
+                print("[HINT] python main.py <url> --cdp-url http://127.0.0.1:<remote_debugging_port>")
             return 1
 
         page = context.new_page()
