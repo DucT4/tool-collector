@@ -1,5 +1,7 @@
 from collectors.tiktok_comment_collector import (
+    _comment_from_api_payload,
     clean_comments,
+    is_comment_data_url,
     is_comment_network_url,
     merge_comment_items,
     normalize_source_url,
@@ -15,7 +17,27 @@ def test_normalize_source_url_strips_query_hash_and_trailing_slash():
 def test_is_comment_network_url_matches_comment_and_reply_apis():
     assert is_comment_network_url("https://www.tiktok.com/api/comment/list/?aweme_id=1")
     assert is_comment_network_url("https://www.tiktok.com/api/comment/list/reply/?comment_id=2")
+    assert is_comment_network_url("https://mcs-sg.tiktokv.com/v1/list")
+    assert not is_comment_data_url("https://mcs-sg.tiktokv.com/v1/list")
     assert not is_comment_network_url("https://www.tiktok.com/api/post/item_list/")
+
+
+def test_comment_from_api_payload_extracts_parent_and_replies():
+    payload = {
+        "cid": "parent-1",
+        "text": "parent text",
+        "user": {"nickname": "Alice"},
+        "reply_comment": [
+            {"cid": "reply-1", "text": "reply text", "user": {"nickname": "Bob"}},
+        ],
+    }
+
+    assert _comment_from_api_payload(payload) == {
+        "cid": "parent-1",
+        "name": "Alice",
+        "comment": "parent text",
+        "replies": [{"cid": "reply-1", "name": "Bob", "comment": "reply text"}],
+    }
 
 
 def test_clean_comments_trims_and_dedupes_comments_and_replies():

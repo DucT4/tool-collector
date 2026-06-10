@@ -3,9 +3,9 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 
-from playwright.sync_api import Page, Request, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Page, Request, Response, TimeoutError as PlaywrightTimeoutError
 
 from config import tiktok_selectors as selectors
 from config.settings import settings
@@ -18,8 +18,19 @@ class TikTokAccessBlocked(RuntimeError):
 COMMENT_NETWORK_IDLE_MS = 1800
 COMMENT_NETWORK_IDLE_TIMEOUT_MS = 9000
 COMMENT_NETWORK_URL_MARKERS = (
+    "mcs-sg.tiktokv.com/v1/list",
+    "mcs-va.tiktokv.com/v1/list",
     "comment/list",
     "comment/list/reply",
+    "/api/comment/list/",
+    "/api/comment/",
+    "aweme/v1/web/comment",
+)
+
+COMMENT_DATA_URL_MARKERS = (
+    "comment/list",
+    "comment/list/reply",
+    "/api/comment/list/",
     "/api/comment/",
     "aweme/v1/web/comment",
 )
@@ -33,6 +44,8 @@ UI_TEXT_VALUES = {
     "view previous replies",
     "see translation",
     "more",
+    "tr\u1ea3 l\u1eddi",
+    "\u1ea9n",
     "trả lời",
     "ẩn",
 }
@@ -43,10 +56,93 @@ def is_comment_network_url(url: str) -> bool:
     return any(marker in lowered for marker in COMMENT_NETWORK_URL_MARKERS)
 
 
+def is_comment_data_url(url: str) -> bool:
+    lowered = url.lower()
+    return any(marker in lowered for marker in COMMENT_DATA_URL_MARKERS)
+
+
+def _comment_id_from_url(url: str) -> str:
+    query = parse_qs(urlsplit(url).query)
+    for key in ("comment_id", "root_comment_id", "cid"):
+        value = query.get(key)
+        if value:
+            return value[0]
+    return ""
+
+
+def _extract_tiktok_user_name(user: dict | None) -> str:
+    if not isinstance(user, dict):
+        return ""
+    for key in ("nickname", "unique_id", "uniqueId", "sec_uid", "uid"):
+        value = user.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _extract_tiktok_comment_text(comment: dict) -> str:
+    for key in ("text", "comment_text", "commentText", "reply_comment_total_text"):
+        value = comment.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _extract_tiktok_comment_id(comment: dict) -> str:
+    for key in ("cid", "comment_id", "commentId", "id"):
+        value = comment.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _extract_tiktok_comment_list(payload) -> list[dict]:
+    if not isinstance(payload, dict):
+        return []
+    comments = payload.get("comments")
+    if isinstance(comments, list):
+        return [comment for comment in comments if isinstance(comment, dict)]
+    data = payload.get("data")
+    if isinstance(data, dict):
+        return _extract_tiktok_comment_list(data)
+    return []
+
+
+def _comment_from_api_payload(comment: dict) -> dict:
+    replies = []
+    for key in ("reply_comment", "reply_comments", "replies"):
+        values = comment.get(key)
+        if not isinstance(values, list):
+            continue
+        for reply in values:
+            if not isinstance(reply, dict):
+                continue
+            reply_text = _extract_tiktok_comment_text(reply)
+            if not reply_text:
+                continue
+            replies.append(
+                {
+                    "cid": _extract_tiktok_comment_id(reply),
+                    "name": _extract_tiktok_user_name(reply.get("user")),
+                    "comment": reply_text,
+                }
+            )
+
+    return {
+        "cid": _extract_tiktok_comment_id(comment),
+        "name": _extract_tiktok_user_name(comment.get("user")),
+        "comment": _extract_tiktok_comment_text(comment),
+        "replies": replies,
+    }
+
+
 class CommentNetworkMonitor:
     def __init__(self) -> None:
         self.pending: dict[int, str] = {}
+        self.api_items_by_cid: dict[str, dict] = {}
+        self.pending_replies_by_parent_cid: dict[str, list[dict]] = {}
         self.request_count = 0
+        self.data_response_count = 0
         self.finished_count = 0
         self.last_activity = time.monotonic()
         self._handlers = []
@@ -66,14 +162,82 @@ class CommentNetworkMonitor:
             self.finished_count += 1
             self.last_activity = time.monotonic()
 
+        def on_response(response: Response) -> None:
+            if not is_comment_data_url(response.url):
+                return
+            try:
+                payload = response.json()
+            except Exception:
+                return
+
+            comments = _extract_tiktok_comment_list(payload)
+            if not comments:
+                return
+
+            parent_cid = _comment_id_from_url(response.url)
+            self.data_response_count += 1
+            for comment in comments:
+                item = _comment_from_api_payload(comment)
+                if not item.get("comment"):
+                    continue
+                cid = item.get("cid") or ""
+                if parent_cid and cid != parent_cid:
+                    self.pending_replies_by_parent_cid.setdefault(parent_cid, []).append(item)
+                else:
+                    self._merge_api_item(item)
+
+            self._flush_pending_api_replies()
+
         page.on("request", on_request)
+        page.on("response", on_response)
         page.on("requestfinished", on_request_done)
         page.on("requestfailed", on_request_done)
         self._handlers = [
             ("request", on_request),
+            ("response", on_response),
             ("requestfinished", on_request_done),
             ("requestfailed", on_request_done),
         ]
+
+    def _merge_api_item(self, item: dict) -> None:
+        cid = item.get("cid") or f"{item.get('name', '')}:{item.get('comment', '')}"
+        existing = self.api_items_by_cid.setdefault(
+            cid,
+            {
+                "cid": cid,
+                "name": item.get("name", ""),
+                "comment": item.get("comment", ""),
+                "replies": [],
+            },
+        )
+        if item.get("name") and not existing.get("name"):
+            existing["name"] = item["name"]
+        if item.get("comment") and not existing.get("comment"):
+            existing["comment"] = item["comment"]
+
+        seen = {(reply.get("name", ""), reply.get("comment", "")) for reply in existing.get("replies", [])}
+        for reply in item.get("replies", []):
+            reply_key = (reply.get("name", ""), reply.get("comment", ""))
+            if reply_key in seen:
+                continue
+            seen.add(reply_key)
+            existing["replies"].append(reply)
+
+    def _flush_pending_api_replies(self) -> None:
+        for parent_cid in list(self.pending_replies_by_parent_cid):
+            if parent_cid not in self.api_items_by_cid:
+                continue
+            self._merge_api_item(
+                {
+                    "cid": parent_cid,
+                    "replies": self.pending_replies_by_parent_cid[parent_cid],
+                }
+            )
+            del self.pending_replies_by_parent_cid[parent_cid]
+
+    def collect_api_comments(self, source_url: str | None = None) -> list[dict]:
+        self._flush_pending_api_replies()
+        return clean_comments(list(self.api_items_by_cid.values()), source_url=source_url)
 
     def stop(self, page: Page) -> None:
         for event_name, handler in self._handlers:
@@ -635,6 +799,8 @@ def expand_comments_and_replies(
     stable_rounds = 0
     previous_total = count_loaded_comment_and_reply_blocks(page)
     accumulated = collect_comment_data(page, source_url=source_url)
+    if network_monitor:
+        accumulated = merge_comment_items(accumulated, network_monitor.collect_api_comments(source_url=source_url))
     rounds = 0
     hard_round_limit = scroll_times
     if target_comment_count:
@@ -648,6 +814,8 @@ def expand_comments_and_replies(
         else:
             page.wait_for_timeout(1200)
         accumulated = merge_comment_items(accumulated, collect_comment_data(page, source_url=source_url))
+        if network_monitor:
+            accumulated = merge_comment_items(accumulated, network_monitor.collect_api_comments(source_url=source_url))
 
         remaining_click_budget = max_reply_clicks - total_reply_clicks
         if remaining_click_budget > 0:
@@ -657,6 +825,8 @@ def expand_comments_and_replies(
             else:
                 page.wait_for_timeout(900)
             accumulated = merge_comment_items(accumulated, collect_comment_data(page, source_url=source_url))
+            if network_monitor:
+                accumulated = merge_comment_items(accumulated, network_monitor.collect_api_comments(source_url=source_url))
 
         current_total = len(accumulated) + sum(len(item.get("replies", [])) for item in accumulated)
         current_comments = count_loaded_comment_blocks(page)
@@ -895,6 +1065,7 @@ def collect_from_video(
             raise TikTokAccessBlocked(blocker)
 
         comments = merge_comment_items(accumulated_comments, collect_comment_data(page, source_url=source_url))
+        comments = merge_comment_items(comments, network_monitor.collect_api_comments(source_url=source_url))
         if debug:
             total_replies = sum(len(item.get("replies", [])) for item in comments)
             print(
@@ -903,6 +1074,9 @@ def collect_from_video(
                 f"reply_clicks={reply_clicks} scroll_rounds={expand_stats['rounds']} "
                 f"stop_reason={expand_stats['stop_reason']} "
                 f"comment_network_requests={network_monitor.request_count} "
+                f"comment_data_responses={network_monitor.data_response_count} "
+                f"api_comments={len(network_monitor.api_items_by_cid)} "
+                f"api_pending_reply_parents={len(network_monitor.pending_replies_by_parent_cid)} "
                 f"pending_comment_network={len(network_monitor.pending)}"
             )
             if not comments:
