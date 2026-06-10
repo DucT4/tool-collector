@@ -1126,6 +1126,10 @@ def collect_from_video(
                 f"api_pending_reply_parents={len(network_monitor.pending_replies_by_parent_cid)} "
                 f"pending_comment_network={len(network_monitor.pending)}"
             )
+            if expand_stats["stop_reason"] == "max_reply_clicks_reached":
+                print("[WARN] Reply click limit reached. Use --max-reply-clicks 0 to keep opening replies until no expander remains.")
+            if not comments and not network_monitor.request_count:
+                print("[WARN] No TikTok comment network requests were detected. The page likely did not render comments in this CDP browser.")
             if not comments:
                 dump_debug_artifacts(page)
 
