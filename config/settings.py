@@ -28,6 +28,8 @@ class Settings:
     scroll_times: int = _int_env("SCROLL_TIMES", 5)
     max_reply_clicks: int = _int_env("MAX_REPLY_CLICKS", 0)
     page_timeout_ms: int = _int_env("PAGE_TIMEOUT_MS", 30000)
+    telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
 
 
 settings = Settings()

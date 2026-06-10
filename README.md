@@ -86,6 +86,26 @@ Use `--max-reply-clicks 0` to keep opening visible reply expanders until none re
 The collector watches TikTok comment/reply network calls such as `comment/list` and `comment/list/reply`.
 It only stops after the comment DOM stops growing, no tracked comment/reply request is pending, and no visible reply expander remains. If `--debug` is enabled, the output includes `comment_network_requests`, `pending_comment_network`, `reply_clicks`, `scroll_rounds`, and `stop_reason`.
 
+## Monitor and Telegram Alerts
+
+Set Telegram values in `.env`:
+
+```env
+TELEGRAM_BOT_TOKEN=YOUR_BOT_TOKEN
+TELEGRAM_CHAT_ID=YOUR_CHAT_ID
+```
+
+Run a foreground monitor that checks every 10 minutes:
+
+```powershell
+python main.py "https://www.tiktok.com/@user/video/123456789" `
+  --monitor `
+  --interval-minutes 10 `
+  --debug
+```
+
+The first run seeds MongoDB for a new video and sends a short seeded summary. Later runs send only new parent comments and new replies.
+
 The tool does not bypass login, captcha, or access controls. It only reads public content rendered in the browser DOM.
 
 ## Selector Updates
