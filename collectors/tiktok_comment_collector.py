@@ -433,6 +433,46 @@ COMMENT_TAB_SCRIPT = """
 """
 
 
+COMMENT_TAB_CLICK_POINT_SCRIPT = """
+() => {
+    const normalize = (value) => (value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const isVisible = (el) => {
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+    };
+    const isCommentText = (text) => /^b\\u00ecnh lu\\u1eadn(?:\\s*\\(\\d+\\))?$/.test(text) || /^comments(?:\\s*\\(\\d+\\))?$/.test(text);
+    const candidates = [...document.querySelectorAll("button, [role='tab'], [role='button'], div, span")]
+        .filter(isVisible)
+        .map((el) => {
+            const text = normalize(el.innerText || el.textContent || "");
+            const rect = el.getBoundingClientRect();
+            const target = el.closest("button, [role='tab'], [role='button']") || el;
+            const targetRect = target.getBoundingClientRect();
+            return { el, target, text, rect, targetRect, area: rect.width * rect.height };
+        })
+        .filter((item) => {
+            const rightPanel = item.rect.left > window.innerWidth * 0.42;
+            const tabRow = item.rect.top < window.innerHeight * 0.42;
+            const compact = item.rect.width < 260 && item.rect.height < 90;
+            return isCommentText(item.text) && rightPanel && tabRow && compact;
+        })
+        .sort((a, b) => {
+            if (a.rect.top !== b.rect.top) return a.rect.top - b.rect.top;
+            return a.area - b.area;
+        });
+
+    const candidate = candidates[0];
+    if (!candidate) return null;
+    const rect = candidate.targetRect.width && candidate.targetRect.height ? candidate.targetRect : candidate.rect;
+    return {
+        x: Math.min(Math.max(rect.left + rect.width / 2, 1), window.innerWidth - 1),
+        y: Math.min(Math.max(rect.top + rect.height / 2, 1), window.innerHeight - 1),
+    };
+}
+"""
+
+
 def is_comment_panel_open(page: Page) -> bool:
     try:
         return bool(
@@ -449,10 +489,26 @@ def is_comment_panel_open(page: Page) -> bool:
         return False
 
 
+def click_comment_tab(page: Page) -> bool:
+    try:
+        point = page.evaluate(COMMENT_TAB_CLICK_POINT_SCRIPT)
+        if not point:
+            return False
+        page.mouse.click(point["x"], point["y"])
+        page.wait_for_timeout(1200)
+        return True
+    except Exception:
+        return False
+
+
 def ensure_comment_tab_active(page: Page) -> bool:
     try:
-        if page.evaluate(f"() => ({COMMENT_TAB_SCRIPT})().commentActive"):
-            return True
+        state = page.evaluate(f"() => ({COMMENT_TAB_SCRIPT})()")
+        if state.get("hasCommentTab"):
+            click_comment_tab(page)
+            state = page.evaluate(f"() => ({COMMENT_TAB_SCRIPT})()")
+            if state.get("commentActive") or state.get("hasCommentNodes") or state.get("hasCommentEmptyState"):
+                return True
 
         clicked = page.evaluate(
             """
@@ -479,7 +535,8 @@ def ensure_comment_tab_active(page: Page) -> bool:
         )
         if clicked:
             page.wait_for_timeout(1500)
-        return bool(page.evaluate(f"() => ({COMMENT_TAB_SCRIPT})().commentActive"))
+        state = page.evaluate(f"() => ({COMMENT_TAB_SCRIPT})()")
+        return bool(state.get("commentActive") or state.get("hasCommentNodes") or state.get("hasCommentEmptyState"))
     except Exception:
         return False
 
@@ -609,6 +666,7 @@ def get_target_comment_count(page: Page) -> int | None:
 
 
 def reset_comment_scroll(page: Page) -> None:
+    ensure_comment_tab_active(page)
     page.evaluate(
         """
         () => {
@@ -690,6 +748,9 @@ def count_loaded_comment_and_reply_blocks(page: Page) -> int:
 
 
 def scroll_comment_area_once(page: Page) -> bool:
+    if not ensure_comment_tab_active(page):
+        return False
+
     target_point = page.evaluate(
         """
         () => {
@@ -762,13 +823,7 @@ def scroll_comment_area_once(page: Page) -> bool:
         except Exception:
             pass
 
-    try:
-        viewport = page.viewport_size or {"width": 1366, "height": 768}
-        page.mouse.move(viewport["width"] * 0.78, viewport["height"] * 0.55)
-    except Exception:
-        pass
-    page.mouse.wheel(0, 1600)
-    return True
+    return False
 
 
 def scroll_comments(page: Page, times: int = 5, target_count: int | None = None) -> int:
