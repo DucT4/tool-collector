@@ -1,5 +1,6 @@
 from collectors.tiktok_comment_collector import (
     CommentNetworkMonitor,
+    UNLIMITED_REPLY_CLICK_HARD_CAP,
     _comment_from_api_payload,
     clean_comments,
     is_comment_data_url,
@@ -132,3 +133,7 @@ def test_comment_network_monitor_keeps_replies_when_parent_is_missing():
             "replies": [{"name": "Bob", "comment": "real reply"}],
         }
     ]
+
+
+def test_unlimited_reply_click_hard_cap_is_available():
+    assert UNLIMITED_REPLY_CLICK_HARD_CAP > 100

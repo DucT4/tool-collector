@@ -1098,8 +1098,8 @@ def collect_from_video(
         target_count = get_target_comment_count(page)
         _, reply_clicks, accumulated_comments, expand_stats = expand_comments_and_replies(
             page,
-            scroll_times=scroll_times or settings.scroll_times,
-            max_reply_clicks=max_reply_clicks or settings.max_reply_clicks,
+            scroll_times=settings.scroll_times if scroll_times is None else scroll_times,
+            max_reply_clicks=settings.max_reply_clicks if max_reply_clicks is None else max_reply_clicks,
             target_comment_count=target_count,
             source_url=source_url,
             network_monitor=network_monitor,
