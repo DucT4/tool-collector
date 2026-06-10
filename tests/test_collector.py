@@ -1,4 +1,5 @@
 from collectors.tiktok_comment_collector import (
+    CommentNetworkMonitor,
     _comment_from_api_payload,
     clean_comments,
     is_comment_data_url,
@@ -100,4 +101,34 @@ def test_merge_comment_items_keeps_existing_comments_and_merges_replies():
             "replies": [{"name": "Bob", "comment": "one"}, {"name": "Cat", "comment": "two"}],
         },
         {"name": "Dan", "comment": "other", "replies": []},
+    ]
+
+
+def test_merge_comment_items_uses_cid_when_available():
+    existing = [{"cid": "parent-1", "name": "Alice", "comment": "parent", "replies": []}]
+    new_items = [{"cid": "parent-1", "name": "", "comment": "", "replies": [{"name": "Bob", "comment": "reply"}]}]
+
+    assert merge_comment_items(existing, new_items) == [
+        {
+            "cid": "parent-1",
+            "name": "Alice",
+            "comment": "parent",
+            "replies": [{"name": "Bob", "comment": "reply"}],
+        }
+    ]
+
+
+def test_comment_network_monitor_keeps_replies_when_parent_is_missing():
+    monitor = CommentNetworkMonitor()
+    monitor.pending_replies_by_parent_cid["parent-1"] = [{"name": "Bob", "comment": "real reply"}]
+
+    comments = monitor.collect_api_comments(source_url="https://example.test/video")
+
+    assert comments == [
+        {
+            "cid": "parent-1",
+            "name": "",
+            "comment": "[parent_comment_id:parent-1]",
+            "replies": [{"name": "Bob", "comment": "real reply"}],
+        }
     ]

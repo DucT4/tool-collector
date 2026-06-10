@@ -212,7 +212,9 @@ class CommentNetworkMonitor:
         )
         if item.get("name") and not existing.get("name"):
             existing["name"] = item["name"]
-        if item.get("comment") and not existing.get("comment"):
+        if item.get("comment") and (
+            not existing.get("comment") or str(existing.get("comment", "")).startswith("[parent_comment_id:")
+        ):
             existing["comment"] = item["comment"]
 
         seen = {(reply.get("name", ""), reply.get("comment", "")) for reply in existing.get("replies", [])}
@@ -226,7 +228,12 @@ class CommentNetworkMonitor:
     def _flush_pending_api_replies(self) -> None:
         for parent_cid in list(self.pending_replies_by_parent_cid):
             if parent_cid not in self.api_items_by_cid:
-                continue
+                self.api_items_by_cid[parent_cid] = {
+                    "cid": parent_cid,
+                    "name": "",
+                    "comment": f"[parent_comment_id:{parent_cid}]",
+                    "replies": [],
+                }
             self._merge_api_item(
                 {
                     "cid": parent_cid,
@@ -310,29 +317,42 @@ def clean_comments(items: list[dict], source_url: str | None = None) -> list[dic
             continue
         seen.add(key)
 
-        cleaned.append({"name": name, "comment": comment, "replies": replies})
+        cleaned_item = {"name": name, "comment": comment, "replies": replies}
+        if item.get("cid"):
+            cleaned_item["cid"] = clean_text(str(item.get("cid")))
+        cleaned.append(cleaned_item)
 
     return cleaned
 
 
 def merge_comment_items(existing: list[dict], new_items: list[dict]) -> list[dict]:
-    merged: dict[tuple[str, str], dict] = {
-        (item.get("name", ""), item.get("comment", "")): {
+    merged: dict[tuple[str, str], dict] = {}
+    cid_index: dict[str, tuple[str, str]] = {}
+
+    for item in existing:
+        key = (item.get("name", ""), item.get("comment", ""))
+        merged[key] = {
             "name": item.get("name", ""),
             "comment": item.get("comment", ""),
             "replies": list(item.get("replies", [])),
         }
-        for item in existing
-    }
+        if item.get("cid"):
+            merged[key]["cid"] = item["cid"]
+            cid_index[str(item["cid"])] = key
 
     for item in new_items:
-        key = (item.get("name", ""), item.get("comment", ""))
+        item_cid = str(item.get("cid", ""))
+        key = cid_index.get(item_cid) if item_cid else None
+        key = key or (item.get("name", ""), item.get("comment", ""))
         if key not in merged:
             merged[key] = {
                 "name": item.get("name", ""),
                 "comment": item.get("comment", ""),
                 "replies": [],
             }
+        if item_cid:
+            merged[key]["cid"] = item_cid
+            cid_index[item_cid] = key
 
         reply_seen = {
             (reply.get("name", ""), reply.get("comment", ""))
@@ -723,43 +743,52 @@ def open_replies(page: Page, max_clicks: int = 30) -> int:
     clicked = 0
     patterns = selectors.REPLY_BUTTON_TEXT_PATTERNS
 
-    clicked += page.evaluate(
-        """
-        (maxClicks) => {
-            const isVisible = (el) => {
-                const rect = el.getBoundingClientRect();
-                const style = window.getComputedStyle(el);
-                return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
-            };
-            const isReplyExpander = (text) => {
-                const value = text.replace(/\\s+/g, " ").trim();
-                if (!value) return false;
-                if (/^tr\\u1ea3 l\\u1eddi$/i.test(value) || /^reply$/i.test(value)) return false;
-                if (/^\\u1ea9n$/i.test(value) || /^hide$/i.test(value)) return false;
-                return /view.*repl/i.test(value)
-                    || /more replies/i.test(value)
-                    || /xem\\s+\\d+\\s+c\\u00e2u tr\\u1ea3 l\\u1eddi/i.test(value)
-                    || /xem th\\u00eam\\s+\\d*/i.test(value)
-                    || /c\\u00e2u tr\\u1ea3 l\\u1eddi/i.test(value);
-            };
+    while clicked < max_clicks:
+        batch_clicked = page.evaluate(
+            """
+            (maxClicks) => {
+                const isVisible = (el) => {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+                };
+                const isReplyExpander = (text) => {
+                    const value = text.replace(/\\s+/g, " ").trim();
+                    if (!value) return false;
+                    if (/^tr\\u1ea3 l\\u1eddi$/i.test(value) || /^reply$/i.test(value)) return false;
+                    if (/^\\u1ea9n$/i.test(value) || /^hide$/i.test(value)) return false;
+                    return /view.*repl/i.test(value)
+                        || /more replies/i.test(value)
+                        || /view more/i.test(value)
+                        || /see more/i.test(value)
+                        || /xem\\s+\\d+\\s+c\\u00e2u tr\\u1ea3 l\\u1eddi/i.test(value)
+                        || /xem th\\u00eam\\s*$/i.test(value)
+                        || /xem th\\u00eam\\s+\\d*/i.test(value)
+                        || /c\\u00e2u tr\\u1ea3 l\\u1eddi/i.test(value);
+                };
 
-            let clicked = 0;
-            const candidates = [...document.querySelectorAll("button, [role='button'], div, span, p")]
-                .filter(isVisible)
-                .filter((el) => isReplyExpander(el.innerText || el.textContent || ""));
+                let clicked = 0;
+                const clickedTargets = new Set();
+                const candidates = [...document.querySelectorAll("button, [role='button'], div, span, p")]
+                    .filter(isVisible)
+                    .filter((el) => isReplyExpander(el.innerText || el.textContent || ""));
 
-            for (const candidate of candidates) {
-                if (clicked >= maxClicks) break;
-                const target = candidate.closest("button, [role='button']") || candidate;
-                target.click();
-                clicked += 1;
+                for (const candidate of candidates) {
+                    if (clicked >= maxClicks) break;
+                    const target = candidate.closest("button, [role='button']") || candidate;
+                    if (clickedTargets.has(target)) continue;
+                    clickedTargets.add(target);
+                    target.click();
+                    clicked += 1;
+                }
+                return clicked;
             }
-            return clicked;
-        }
-        """,
-        max_clicks,
-    )
-    if clicked:
+            """,
+            max_clicks - clicked,
+        )
+        if not batch_clicked:
+            break
+        clicked += batch_clicked
         page.wait_for_timeout(1200)
 
     for pattern in patterns:
