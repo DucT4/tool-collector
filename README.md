@@ -81,6 +81,8 @@ python main.py "https://www.tiktok.com/@user/video/123456789" `
   --debug
 ```
 
+Use `--max-reply-clicks 0` to keep opening visible reply expanders until none remain. The tool still keeps an internal hard cap to avoid hanging on broken pages.
+
 The collector watches TikTok comment/reply network calls such as `comment/list` and `comment/list/reply`.
 It only stops after the comment DOM stops growing, no tracked comment/reply request is pending, and no visible reply expander remains. If `--debug` is enabled, the output includes `comment_network_requests`, `pending_comment_network`, `reply_clicks`, `scroll_rounds`, and `stop_reason`.
 

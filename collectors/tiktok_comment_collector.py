@@ -17,6 +17,7 @@ class TikTokAccessBlocked(RuntimeError):
 
 COMMENT_NETWORK_IDLE_MS = 1800
 COMMENT_NETWORK_IDLE_TIMEOUT_MS = 9000
+UNLIMITED_REPLY_CLICK_HARD_CAP = 10000
 COMMENT_NETWORK_URL_MARKERS = (
     "mcs-sg.tiktokv.com/v1/list",
     "mcs-va.tiktokv.com/v1/list",
@@ -739,11 +740,14 @@ def count_reply_buttons(page: Page) -> int:
     )
 
 
-def open_replies(page: Page, max_clicks: int = 30) -> int:
+def open_replies(page: Page, max_clicks: int = 30, network_monitor: CommentNetworkMonitor | None = None) -> int:
     clicked = 0
     patterns = selectors.REPLY_BUTTON_TEXT_PATTERNS
 
     while clicked < max_clicks:
+        if count_reply_buttons(page) <= 0:
+            break
+
         batch_clicked = page.evaluate(
             """
             (maxClicks) => {
@@ -789,7 +793,11 @@ def open_replies(page: Page, max_clicks: int = 30) -> int:
         if not batch_clicked:
             break
         clicked += batch_clicked
-        page.wait_for_timeout(1200)
+        if network_monitor:
+            network_monitor.wait_for_idle(page)
+        else:
+            page.wait_for_timeout(1200)
+        page.wait_for_timeout(500)
 
     for pattern in patterns:
         if clicked >= max_clicks:
@@ -809,7 +817,10 @@ def open_replies(page: Page, max_clicks: int = 30) -> int:
                     continue
                 target.click(timeout=1500)
                 clicked += 1
-                page.wait_for_timeout(800)
+                if network_monitor:
+                    network_monitor.wait_for_idle(page)
+                else:
+                    page.wait_for_timeout(800)
             except Exception:
                 continue
 
@@ -824,6 +835,9 @@ def expand_comments_and_replies(
     source_url: str | None = None,
     network_monitor: CommentNetworkMonitor | None = None,
 ) -> tuple[int, int, list[dict], dict]:
+    if max_reply_clicks <= 0:
+        max_reply_clicks = UNLIMITED_REPLY_CLICK_HARD_CAP
+
     total_reply_clicks = 0
     stable_rounds = 0
     previous_total = count_loaded_comment_and_reply_blocks(page)
@@ -848,7 +862,11 @@ def expand_comments_and_replies(
 
         remaining_click_budget = max_reply_clicks - total_reply_clicks
         if remaining_click_budget > 0:
-            total_reply_clicks += open_replies(page, max_clicks=remaining_click_budget)
+            total_reply_clicks += open_replies(
+                page,
+                max_clicks=remaining_click_budget,
+                network_monitor=network_monitor,
+            )
             if network_monitor:
                 network_monitor.wait_for_idle(page)
             else:
