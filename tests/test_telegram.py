@@ -37,10 +37,14 @@ def test_format_comment_notifications_includes_comments_and_replies():
     )
 
     text = "\n".join(messages)
-    assert "New comments: 1" in text
-    assert "New replies: 1" in text
+    assert "TikTok có tương tác mới" in text
+    assert "Bình luận mới:" in text
+    assert "Phản hồi mới:" in text
     assert "Alice: hello" in text
     assert "Cat: reply" in text
+    assert "trả lời Bob: parent" in text
+    assert "New comments" not in text
+    assert "New replies" not in text
 
 
 def test_split_telegram_message_respects_limit():
@@ -74,7 +78,7 @@ def test_subscription_service_registers_start_and_advances_offset():
     assert service.next_offset == 43
     assert collection.calls[0][0] == {"telegram_chat_id": "123"}
     assert collection.calls[0][1]["$set"]["link_token"] == "ACCOUNT-1001"
-    assert notifier.sent[0][0] == "123"
+    assert notifier.sent == []
 
 
 def test_subscription_service_deactivates_stop():
@@ -87,3 +91,4 @@ def test_subscription_service_deactivates_stop():
     assert service.poll_once() == 1
     assert collection.calls[0][1]["$set"]["active"] is False
     assert collection.calls[0][2] is False
+    assert notifier.sent == []

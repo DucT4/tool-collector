@@ -102,7 +102,7 @@ TELEGRAM_SUBSCRIBER_COLLECTION=telegram_subscribers
 2. Open the bot in Telegram and send `/start`.
 3. The monitor reads the update through Telegram `getUpdates` and saves the sender in MongoDB collection `telegram_subscribers`.
 4. Future TikTok comment/reply notifications are broadcast to every active subscriber.
-5. Send `/stop` to disable notifications for that chat, or `/start` again to re-enable them.
+5. Send `/stop` to disable notifications for that chat, or `/start` again to re-enable them. Registration commands are handled silently.
 
 The subscriber document stores `telegram_user_id`, `telegram_chat_id`, username/name fields, chat type, active state, and an optional deep-link value from `/start LINK_TOKEN`. The link token can later be matched to an application user account if the project adds its own user table.
 
@@ -115,7 +115,7 @@ python main.py "https://www.tiktok.com/@user/video/123456789" `
   --debug
 ```
 
-The first run seeds MongoDB for a new video and sends a short seeded summary. Later runs send only new parent comments and new replies.
+The first run only seeds MongoDB and sends no Telegram message. Later runs send only new parent comments and new replies. Browser, CDP, crawl, and system errors are written to terminal/log output only and are never sent to subscribers.
 While waiting between TikTok checks, the process polls Telegram every 5 seconds so new `/start` registrations do not need to wait for the next TikTok crawl.
 
 The tool does not bypass login, captcha, or access controls. It only reads public content rendered in the browser DOM.

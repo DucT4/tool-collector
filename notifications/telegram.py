@@ -49,28 +49,26 @@ def format_comment_notifications(
     new_replies: list[dict],
 ) -> list[str]:
     lines = [
-        "TikTok comments update",
+        "TikTok có tương tác mới",
         source_url,
-        f"New comments: {len(new_comments)}",
-        f"New replies: {len(new_replies)}",
     ]
 
     if new_comments:
         lines.append("")
-        lines.append("Comments:")
+        lines.append("Bình luận mới:")
         for item in new_comments:
             lines.append(f"- {truncate_text(item.get('name', ''))}: {truncate_text(item.get('comment', ''))}")
 
     if new_replies:
         lines.append("")
-        lines.append("Replies:")
+        lines.append("Phản hồi mới:")
         for item in new_replies:
             parent = item.get("parent", {})
             reply = item.get("reply", {})
             lines.append(
                 "- "
                 f"{truncate_text(reply.get('name', ''))}: {truncate_text(reply.get('comment', ''))} "
-                f"(to {truncate_text(parent.get('name', ''))}: {truncate_text(parent.get('comment', ''), 90)})"
+                f"(trả lời {truncate_text(parent.get('name', ''))}: {truncate_text(parent.get('comment', ''), 90)})"
             )
 
     return split_telegram_message(lines)
@@ -149,13 +147,8 @@ class TelegramSubscriptionService:
 
             if command == "/start":
                 save_telegram_subscriber(message, self.collection)
-                self.notifier.send_message(
-                    "Da dang ky nhan thong bao TikTok. Gui /stop de ngung nhan thong bao.",
-                    chat_id=chat_id,
-                )
             else:
                 deactivate_telegram_subscriber(chat_id, self.collection)
-                self.notifier.send_message("Da ngung nhan thong bao TikTok. Gui /start de dang ky lai.", chat_id=chat_id)
             processed += 1
 
         return processed

@@ -128,6 +128,12 @@ def broadcast_telegram_messages(notifier: TelegramNotifier, subscriber_collectio
     return sent
 
 
+def notification_messages_for_diff(source_url: str, diff) -> list[str]:
+    if diff.seeded or not (diff.new_comments or diff.new_replies):
+        return []
+    return format_comment_notifications(source_url, diff.new_comments, diff.new_replies)
+
+
 def poll_telegram_subscriptions(service: TelegramSubscriptionService) -> None:
     try:
         processed = service.poll_once()
@@ -182,33 +188,21 @@ def run_monitor(args: argparse.Namespace, collection, subscriber_collection) -> 
                             f"seeded={diff.seeded} elapsed={elapsed:.1f}s"
                         )
 
-                        if diff.seeded:
+                        notification_messages = notification_messages_for_diff(source_url, diff)
+                        if notification_messages:
                             broadcast_telegram_messages(
                                 notifier,
                                 subscriber_collection,
-                                [f"TikTok monitor seeded\n{source_url}\nComments stored: {len(comments)}\nReplies stored: {reply_count}"],
-                            )
-                        elif diff.new_comments or diff.new_replies:
-                            broadcast_telegram_messages(
-                                notifier,
-                                subscriber_collection,
-                                format_comment_notifications(source_url, diff.new_comments, diff.new_replies),
+                                notification_messages,
                             )
                     except Exception as exc:
-                        message = f"TikTok monitor error\n{source_url}\n{exc}"
                         print(f"[MONITOR ERROR] {source_url} error={exc}")
                         reconnect_required = is_browser_connection_error(exc)
-                        broadcast_telegram_messages(notifier, subscriber_collection, [message[:3900]])
                         if reconnect_required:
                             break
             except Exception as exc:
                 reconnect_required = True
                 print(f"[MONITOR CONNECTION ERROR] {exc}")
-                broadcast_telegram_messages(
-                    notifier,
-                    subscriber_collection,
-                    [f"TikTok monitor connection lost\n{exc}"[:3900]],
-                )
             finally:
                 if page is not None:
                     try:
