@@ -95,12 +95,12 @@ TELEGRAM_BOT_TOKEN=YOUR_BOT_TOKEN
 TELEGRAM_CHAT_ID=YOUR_CHAT_ID
 ```
 
-Run a foreground monitor that checks every 10 minutes:
+Run a foreground monitor that checks every 5 minutes:
 
 ```powershell
 python main.py "https://www.tiktok.com/@user/video/123456789" `
   --monitor `
-  --interval-minutes 10 `
+  --interval-minutes 5 `
   --debug
 ```
 

@@ -23,7 +23,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--scroll-times", type=int, default=settings.scroll_times)
     parser.add_argument("--max-reply-clicks", type=int, default=settings.max_reply_clicks)
     parser.add_argument("--monitor", action="store_true", help="Run forever and check URLs repeatedly.")
-    parser.add_argument("--interval-minutes", type=float, default=10, help="Monitor interval in minutes.")
+    parser.add_argument("--interval-minutes", type=float, default=5, help="Monitor interval in minutes (default: 5).")
     parser.add_argument("--debug", action="store_true", help="Dump selector candidates and screenshot on empty results.")
     args = parser.parse_args(argv)
     args.cdp_url_provided = any(arg == "--cdp-url" or arg.startswith("--cdp-url=") for arg in argv)
@@ -88,44 +88,103 @@ def run_once(args: argparse.Namespace, context, collection) -> None:
         page.close()
 
 
-def run_monitor(args: argparse.Namespace, context, collection) -> None:
+def is_browser_connection_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "target page, context or browser has been closed",
+            "browsercontext.new_page: target",
+            "browser has been closed",
+            "connection closed",
+            "connection refused",
+            "cdp endpoint is not ready",
+        )
+    )
+
+
+def run_monitor(args: argparse.Namespace, collection) -> None:
     notifier = TelegramNotifier()
     if not notifier.enabled():
         raise TelegramConfigError("Monitor mode requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
 
     interval_seconds = max(args.interval_minutes, 0.1) * 60
     round_index = 0
+    playwright = None
+    context = None
 
-    while True:
-        round_index += 1
-        print(f"[MONITOR] round={round_index} urls={len(args.urls)}")
-        page = context.new_page()
-        try:
-            for url in args.urls:
-                source_url = normalize_source_url(url)
+    try:
+        while True:
+            round_index += 1
+            print(f"[MONITOR] round={round_index} urls={len(args.urls)}")
+            page = None
+            reconnect_required = False
+            try:
+                if context is None:
+                    playwright, context = connect_context(args)
+                page = context.new_page()
+
+                for url in args.urls:
+                    source_url = normalize_source_url(url)
+                    try:
+                        source_url, comments, elapsed = collect_url(page, url, args)
+                        diff = save_and_diff_comments(comments, source_url, collection)
+                        reply_count = sum(len(item.get("replies", [])) for item in comments)
+                        print(
+                            f"[MONITOR OK] comments={len(comments)} replies={reply_count} "
+                            f"new_comments={len(diff.new_comments)} new_replies={len(diff.new_replies)} "
+                            f"seeded={diff.seeded} elapsed={elapsed:.1f}s"
+                        )
+
+                        if diff.seeded:
+                            notifier.send_message(f"TikTok monitor seeded\n{source_url}\nComments stored: {len(comments)}\nReplies stored: {reply_count}")
+                        elif diff.new_comments or diff.new_replies:
+                            notifier.send_messages(format_comment_notifications(source_url, diff.new_comments, diff.new_replies))
+                    except Exception as exc:
+                        message = f"TikTok monitor error\n{source_url}\n{exc}"
+                        print(f"[MONITOR ERROR] {source_url} error={exc}")
+                        reconnect_required = is_browser_connection_error(exc)
+                        try:
+                            notifier.send_message(message[:3900])
+                        except Exception as notify_exc:
+                            print(f"[TELEGRAM ERROR] {notify_exc}")
+                        if reconnect_required:
+                            break
+            except Exception as exc:
+                reconnect_required = True
+                print(f"[MONITOR CONNECTION ERROR] {exc}")
                 try:
-                    source_url, comments, elapsed = collect_url(page, url, args)
-                    diff = save_and_diff_comments(comments, source_url, collection)
-                    reply_count = sum(len(item.get("replies", [])) for item in comments)
-                    print(
-                        f"[MONITOR OK] comments={len(comments)} replies={reply_count} "
-                        f"new_comments={len(diff.new_comments)} new_replies={len(diff.new_replies)} "
-                        f"seeded={diff.seeded} elapsed={elapsed:.1f}s"
-                    )
+                    notifier.send_message(f"TikTok monitor connection lost\n{exc}"[:3900])
+                except Exception as notify_exc:
+                    print(f"[TELEGRAM ERROR] {notify_exc}")
+            finally:
+                if page is not None:
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
 
-                    if diff.seeded:
-                        notifier.send_message(f"TikTok monitor seeded\n{source_url}\nComments stored: {len(comments)}\nReplies stored: {reply_count}")
-                    elif diff.new_comments or diff.new_replies:
-                        notifier.send_messages(format_comment_notifications(source_url, diff.new_comments, diff.new_replies))
-                except Exception as exc:
-                    message = f"TikTok monitor error\n{source_url}\n{exc}"
-                    print(f"[MONITOR ERROR] {source_url} error={exc}")
-                    notifier.send_message(message[:3900])
-        finally:
-            page.close()
+            if reconnect_required:
+                if playwright is not None:
+                    try:
+                        playwright.stop()
+                    except Exception:
+                        pass
+                playwright = None
+                context = None
+                reconnect_delay = min(interval_seconds, 15)
+                print(f"[MONITOR] reconnecting in {reconnect_delay:g} seconds")
+                time.sleep(reconnect_delay)
+                continue
 
-        print(f"[MONITOR] sleeping {args.interval_minutes:g} minutes")
-        time.sleep(interval_seconds)
+            print(f"[MONITOR] sleeping {args.interval_minutes:g} minutes")
+            time.sleep(interval_seconds)
+    finally:
+        if playwright is not None:
+            try:
+                playwright.stop()
+            except Exception:
+                pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -133,16 +192,15 @@ def main(argv: list[str] | None = None) -> int:
     playwright = None
 
     try:
-        try:
-            playwright, context = connect_context(args)
-        except GPMLoginError as exc:
-            print_connection_error(args, exc)
-            return 1
-
         collection = get_collection()
         if args.monitor:
-            run_monitor(args, context, collection)
+            run_monitor(args, collection)
         else:
+            try:
+                playwright, context = connect_context(args)
+            except GPMLoginError as exc:
+                print_connection_error(args, exc)
+                return 1
             run_once(args, context, collection)
 
         return 0

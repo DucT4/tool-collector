@@ -1,6 +1,10 @@
+import truststore
 import requests
 
 from config.settings import settings
+
+
+truststore.inject_into_ssl()
 
 
 TELEGRAM_MESSAGE_LIMIT = 3900
