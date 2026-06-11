@@ -5,9 +5,14 @@ import time
 from browser.cdp import GPMLoginError, connect_to_browser, connect_to_gpm_profile
 from collectors.tiktok_comment_collector import collect_from_video, normalize_source_url
 from config.settings import settings
-from database.mongo import get_collection, save_comments
+from database.mongo import get_active_telegram_chat_ids, get_collection, get_telegram_subscriber_collection, save_comments
 from monitors.tiktok_monitor import save_and_diff_comments
-from notifications.telegram import TelegramConfigError, TelegramNotifier, format_comment_notifications
+from notifications.telegram import (
+    TelegramConfigError,
+    TelegramNotifier,
+    TelegramSubscriptionService,
+    format_comment_notifications,
+)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -103,10 +108,50 @@ def is_browser_connection_error(exc: Exception) -> bool:
     )
 
 
-def run_monitor(args: argparse.Namespace, collection) -> None:
+def telegram_recipient_chat_ids(notifier: TelegramNotifier, subscriber_collection) -> list[str]:
+    chat_ids = set(get_active_telegram_chat_ids(subscriber_collection))
+    if notifier.chat_id:
+        chat_ids.add(str(notifier.chat_id))
+    return sorted(chat_ids)
+
+
+def broadcast_telegram_messages(notifier: TelegramNotifier, subscriber_collection, messages: list[str]) -> int:
+    sent = 0
+    for chat_id in telegram_recipient_chat_ids(notifier, subscriber_collection):
+        try:
+            notifier.send_messages(messages, chat_id=chat_id)
+            sent += 1
+        except Exception as exc:
+            print(f"[TELEGRAM ERROR] chat_id={chat_id} error={exc}")
+    if sent == 0:
+        print("[TELEGRAM] no active subscribers; ask a recipient to send /start to the bot")
+    return sent
+
+
+def poll_telegram_subscriptions(service: TelegramSubscriptionService) -> None:
+    try:
+        processed = service.poll_once()
+        if processed:
+            print(f"[TELEGRAM] processed_subscriptions={processed}")
+    except Exception as exc:
+        print(f"[TELEGRAM POLL ERROR] {exc}")
+
+
+def wait_with_telegram_poll(seconds: float, service: TelegramSubscriptionService, poll_seconds: float = 5) -> None:
+    deadline = time.monotonic() + max(seconds, 0)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(poll_seconds, remaining))
+        poll_telegram_subscriptions(service)
+
+
+def run_monitor(args: argparse.Namespace, collection, subscriber_collection) -> None:
     notifier = TelegramNotifier()
     if not notifier.enabled():
-        raise TelegramConfigError("Monitor mode requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
+        raise TelegramConfigError("Monitor mode requires TELEGRAM_BOT_TOKEN")
+    subscription_service = TelegramSubscriptionService(notifier, subscriber_collection)
 
     interval_seconds = max(args.interval_minutes, 0.1) * 60
     round_index = 0
@@ -115,6 +160,7 @@ def run_monitor(args: argparse.Namespace, collection) -> None:
 
     try:
         while True:
+            poll_telegram_subscriptions(subscription_service)
             round_index += 1
             print(f"[MONITOR] round={round_index} urls={len(args.urls)}")
             page = None
@@ -137,26 +183,32 @@ def run_monitor(args: argparse.Namespace, collection) -> None:
                         )
 
                         if diff.seeded:
-                            notifier.send_message(f"TikTok monitor seeded\n{source_url}\nComments stored: {len(comments)}\nReplies stored: {reply_count}")
+                            broadcast_telegram_messages(
+                                notifier,
+                                subscriber_collection,
+                                [f"TikTok monitor seeded\n{source_url}\nComments stored: {len(comments)}\nReplies stored: {reply_count}"],
+                            )
                         elif diff.new_comments or diff.new_replies:
-                            notifier.send_messages(format_comment_notifications(source_url, diff.new_comments, diff.new_replies))
+                            broadcast_telegram_messages(
+                                notifier,
+                                subscriber_collection,
+                                format_comment_notifications(source_url, diff.new_comments, diff.new_replies),
+                            )
                     except Exception as exc:
                         message = f"TikTok monitor error\n{source_url}\n{exc}"
                         print(f"[MONITOR ERROR] {source_url} error={exc}")
                         reconnect_required = is_browser_connection_error(exc)
-                        try:
-                            notifier.send_message(message[:3900])
-                        except Exception as notify_exc:
-                            print(f"[TELEGRAM ERROR] {notify_exc}")
+                        broadcast_telegram_messages(notifier, subscriber_collection, [message[:3900]])
                         if reconnect_required:
                             break
             except Exception as exc:
                 reconnect_required = True
                 print(f"[MONITOR CONNECTION ERROR] {exc}")
-                try:
-                    notifier.send_message(f"TikTok monitor connection lost\n{exc}"[:3900])
-                except Exception as notify_exc:
-                    print(f"[TELEGRAM ERROR] {notify_exc}")
+                broadcast_telegram_messages(
+                    notifier,
+                    subscriber_collection,
+                    [f"TikTok monitor connection lost\n{exc}"[:3900]],
+                )
             finally:
                 if page is not None:
                     try:
@@ -174,11 +226,11 @@ def run_monitor(args: argparse.Namespace, collection) -> None:
                 context = None
                 reconnect_delay = min(interval_seconds, 15)
                 print(f"[MONITOR] reconnecting in {reconnect_delay:g} seconds")
-                time.sleep(reconnect_delay)
+                wait_with_telegram_poll(reconnect_delay, subscription_service)
                 continue
 
             print(f"[MONITOR] sleeping {args.interval_minutes:g} minutes")
-            time.sleep(interval_seconds)
+            wait_with_telegram_poll(interval_seconds, subscription_service)
     finally:
         if playwright is not None:
             try:
@@ -194,7 +246,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         collection = get_collection()
         if args.monitor:
-            run_monitor(args, collection)
+            subscriber_collection = get_telegram_subscriber_collection()
+            run_monitor(args, collection, subscriber_collection)
         else:
             try:
                 playwright, context = connect_context(args)

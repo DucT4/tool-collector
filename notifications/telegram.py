@@ -2,6 +2,7 @@ import truststore
 import requests
 
 from config.settings import settings
+from database.mongo import deactivate_telegram_subscriber, save_telegram_subscriber
 
 
 truststore.inject_into_ssl()
@@ -81,19 +82,80 @@ class TelegramNotifier:
         self.chat_id = chat_id if chat_id is not None else settings.telegram_chat_id
 
     def enabled(self) -> bool:
-        return bool(self.token and self.chat_id)
+        return bool(self.token)
 
-    def send_message(self, text: str) -> None:
-        if not self.enabled():
-            raise TelegramConfigError("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+    def send_message(self, text: str, chat_id: str | int | None = None) -> None:
+        target_chat_id = str(chat_id) if chat_id is not None else self.chat_id
+        if not self.token:
+            raise TelegramConfigError("Missing TELEGRAM_BOT_TOKEN")
+        if not target_chat_id:
+            raise TelegramConfigError("Missing Telegram chat id")
 
         response = requests.post(
             f"https://api.telegram.org/bot{self.token}/sendMessage",
-            json={"chat_id": self.chat_id, "text": text, "disable_web_page_preview": True},
+            json={"chat_id": target_chat_id, "text": text, "disable_web_page_preview": True},
             timeout=20,
         )
         response.raise_for_status()
 
-    def send_messages(self, messages: list[str]) -> None:
+    def send_messages(self, messages: list[str], chat_id: str | int | None = None) -> None:
         for message in messages:
-            self.send_message(message)
+            self.send_message(message, chat_id=chat_id)
+
+    def get_updates(self, offset: int | None = None) -> list[dict]:
+        if not self.token:
+            raise TelegramConfigError("Missing TELEGRAM_BOT_TOKEN")
+        params: dict[str, object] = {"timeout": 0, "allowed_updates": '["message"]'}
+        if offset is not None:
+            params["offset"] = offset
+        response = requests.get(
+            f"https://api.telegram.org/bot{self.token}/getUpdates",
+            params=params,
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not payload.get("ok"):
+            raise RuntimeError(payload.get("description", "Telegram getUpdates failed"))
+        return payload.get("result", [])
+
+
+class TelegramSubscriptionService:
+    def __init__(self, notifier: TelegramNotifier, collection) -> None:
+        self.notifier = notifier
+        self.collection = collection
+        self.next_offset: int | None = None
+
+    @staticmethod
+    def _command(text: str) -> str:
+        first = (text or "").strip().split(maxsplit=1)[0].lower()
+        return first.split("@", 1)[0]
+
+    def poll_once(self) -> int:
+        updates = self.notifier.get_updates(offset=self.next_offset)
+        processed = 0
+
+        for update in updates:
+            update_id = update.get("update_id")
+            if isinstance(update_id, int):
+                self.next_offset = max(self.next_offset or 0, update_id + 1)
+
+            message = update.get("message") or {}
+            chat = message.get("chat") or {}
+            chat_id = chat.get("id")
+            command = self._command(message.get("text", ""))
+            if chat_id is None or command not in ("/start", "/stop"):
+                continue
+
+            if command == "/start":
+                save_telegram_subscriber(message, self.collection)
+                self.notifier.send_message(
+                    "Da dang ky nhan thong bao TikTok. Gui /stop de ngung nhan thong bao.",
+                    chat_id=chat_id,
+                )
+            else:
+                deactivate_telegram_subscriber(chat_id, self.collection)
+                self.notifier.send_message("Da ngung nhan thong bao TikTok. Gui /start de dang ky lai.", chat_id=chat_id)
+            processed += 1
+
+        return processed

@@ -17,6 +17,61 @@ def get_collection() -> Collection:
     return collection
 
 
+def get_telegram_subscriber_collection() -> Collection:
+    client = MongoClient(settings.mongo_url)
+    collection = client[settings.mongo_db][settings.telegram_subscriber_collection]
+    collection.create_index("telegram_chat_id", unique=True, name="uniq_telegram_chat_id")
+    return collection
+
+
+def save_telegram_subscriber(message: dict, collection: Collection) -> None:
+    chat = message.get("chat") or {}
+    user = message.get("from") or {}
+    chat_id = chat.get("id")
+    if chat_id is None:
+        raise ValueError("Telegram message is missing chat.id")
+
+    text = (message.get("text") or "").strip()
+    command_parts = text.split(maxsplit=1)
+    link_token = command_parts[1].strip() if len(command_parts) > 1 else ""
+    now = datetime.now(timezone.utc)
+    collection.update_one(
+        {"telegram_chat_id": str(chat_id)},
+        {
+            "$set": {
+                "telegram_chat_id": str(chat_id),
+                "telegram_user_id": str(user.get("id", "")),
+                "username": user.get("username", ""),
+                "first_name": user.get("first_name", ""),
+                "last_name": user.get("last_name", ""),
+                "chat_type": chat.get("type", ""),
+                "chat_title": chat.get("title", ""),
+                "link_token": link_token,
+                "active": True,
+                "updated_at": now,
+            },
+            "$setOnInsert": {"started_at": now},
+        },
+        upsert=True,
+    )
+
+
+def deactivate_telegram_subscriber(chat_id: str | int, collection: Collection) -> None:
+    collection.update_one(
+        {"telegram_chat_id": str(chat_id)},
+        {"$set": {"active": False, "updated_at": datetime.now(timezone.utc)}},
+        upsert=False,
+    )
+
+
+def get_active_telegram_chat_ids(collection: Collection) -> list[str]:
+    return [
+        str(document["telegram_chat_id"])
+        for document in collection.find({"active": True}, {"telegram_chat_id": 1})
+        if document.get("telegram_chat_id") is not None
+    ]
+
+
 def save_comments(items: list[dict], source_url: str, collection: Collection | None = None, prune_stale: bool = True) -> int:
     target = collection if collection is not None else get_collection()
     saved = 0

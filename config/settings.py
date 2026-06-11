@@ -25,6 +25,7 @@ class Settings:
     mongo_url: str = os.getenv("MONGO_URL", "mongodb://localhost:27017")
     mongo_db: str = os.getenv("MONGO_DB", "social_data")
     mongo_collection: str = os.getenv("MONGO_COLLECTION", "tiktok_comments")
+    telegram_subscriber_collection: str = os.getenv("TELEGRAM_SUBSCRIBER_COLLECTION", "telegram_subscribers")
     scroll_times: int = _int_env("SCROLL_TIMES", 5)
     max_reply_clicks: int = _int_env("MAX_REPLY_CLICKS", 0)
     page_timeout_ms: int = _int_env("PAGE_TIMEOUT_MS", 30000)

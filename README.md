@@ -92,8 +92,19 @@ Set Telegram values in `.env`:
 
 ```env
 TELEGRAM_BOT_TOKEN=YOUR_BOT_TOKEN
-TELEGRAM_CHAT_ID=YOUR_CHAT_ID
+TELEGRAM_CHAT_ID=
+TELEGRAM_SUBSCRIBER_COLLECTION=telegram_subscribers
 ```
+
+`TELEGRAM_CHAT_ID` is optional and remains available as a fallback recipient. The normal registration flow is:
+
+1. Start the monitor process.
+2. Open the bot in Telegram and send `/start`.
+3. The monitor reads the update through Telegram `getUpdates` and saves the sender in MongoDB collection `telegram_subscribers`.
+4. Future TikTok comment/reply notifications are broadcast to every active subscriber.
+5. Send `/stop` to disable notifications for that chat, or `/start` again to re-enable them.
+
+The subscriber document stores `telegram_user_id`, `telegram_chat_id`, username/name fields, chat type, active state, and an optional deep-link value from `/start LINK_TOKEN`. The link token can later be matched to an application user account if the project adds its own user table.
 
 Run a foreground monitor that checks every 5 minutes:
 
@@ -105,6 +116,7 @@ python main.py "https://www.tiktok.com/@user/video/123456789" `
 ```
 
 The first run seeds MongoDB for a new video and sends a short seeded summary. Later runs send only new parent comments and new replies.
+While waiting between TikTok checks, the process polls Telegram every 5 seconds so new `/start` registrations do not need to wait for the next TikTok crawl.
 
 The tool does not bypass login, captcha, or access controls. It only reads public content rendered in the browser DOM.
 
